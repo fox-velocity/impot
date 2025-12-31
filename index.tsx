@@ -11,5 +11,5 @@ if (container) {
     </React.StrictMode>
   );
 } else {
-  console.error("Impossible de trouver l'élément racine #root");
+  console.error("Erreur : l'élément #root est introuvable.");
 }

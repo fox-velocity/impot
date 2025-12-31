@@ -7,7 +7,7 @@ import { TaxChart } from './components/TaxChart';
 import { Landing } from './components/Landing';
 import { DEFAULT_VALUES, runSimulation } from './utils/taxEngine';
 import { TaxInputs, SimulationResult } from './types';
-import { FileText, ChevronLeft, LayoutDashboard } from 'lucide-react';
+import { FileText, ChevronLeft } from 'lucide-react';
 
 const App: React.FC = () => {
   const [view, setView] = useState<'landing' | 'simulator'>('landing');
@@ -52,20 +52,19 @@ const App: React.FC = () => {
             <div className="text-center sm:text-left">
               <button 
                 onClick={() => setView('landing')}
-                className="inline-flex items-center text-indigo-600 hover:text-indigo-800 text-sm font-semibold mb-2 transition-colors group"
+                className="inline-flex items-center text-indigo-600 hover:text-indigo-800 text-sm font-semibold mb-2 transition-colors"
               >
-                <ChevronLeft size={16} className="mr-1 group-hover:-translate-x-1 transition-transform" />
+                <ChevronLeft size={16} className="mr-1" />
                 Retour au portail
               </button>
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Simulateur Impôt <span className="text-indigo-600">2025</span></h1>
-              <p className="text-slate-500 font-medium">
-                  Analyse de vos revenus 2024. Barème officiel DGFIP actualisé.
+              <p className="text-slate-500 font-medium italic">
+                  Revenus 2024 • Barème officiel actualisé
               </p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
-            {/* Formulaire de saisie */}
             <div className="xl:col-span-5 space-y-6">
                <TaxForm 
                  inputs={inputs} 
@@ -74,10 +73,10 @@ const App: React.FC = () => {
                />
                
                {results && (
-                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="flex items-center space-x-2 mb-4 text-slate-800">
                         <FileText size={20} className="text-indigo-600" />
-                        <h3 className="font-bold">Détails de la Cascade Fiscale</h3>
+                        <h3 className="font-bold">Détails du Calcul</h3>
                     </div>
                     <ul className="space-y-2 text-[11px] font-mono text-slate-600 bg-slate-50 p-4 rounded-xl overflow-y-auto max-h-64 border border-slate-100">
                         {results.details.map((line, idx) => (
@@ -88,7 +87,6 @@ const App: React.FC = () => {
                )}
             </div>
 
-            {/* Résultats et Visualisations */}
             <div className="xl:col-span-7 space-y-6">
                 {results && (
                     <>
