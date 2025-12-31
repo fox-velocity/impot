@@ -37,6 +37,7 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Gestion de la navigation SPA (Single Page Application)
   if (view === 'landing') {
     return <Landing onStart={() => setView('simulator')} />;
   }
@@ -52,14 +53,14 @@ const App: React.FC = () => {
             <div className="text-center sm:text-left">
               <button 
                 onClick={() => setView('landing')}
-                className="inline-flex items-center text-indigo-600 hover:text-indigo-800 text-sm font-semibold mb-2 transition-colors"
+                className="inline-flex items-center text-indigo-600 hover:text-indigo-800 text-sm font-semibold mb-2 transition-colors group"
               >
-                <ChevronLeft size={16} className="mr-1" />
+                <ChevronLeft size={16} className="mr-1 group-hover:-translate-x-1 transition-transform" />
                 Retour au portail
               </button>
               <h1 className="text-4xl font-black text-slate-900 tracking-tight">Simulateur Impôt <span className="text-indigo-600">2025</span></h1>
               <p className="text-slate-500 font-medium italic">
-                  Revenus 2024 • Barème officiel actualisé
+                  Expertise Fox Velocity • Revenus 2024
               </p>
             </div>
           </div>
@@ -76,9 +77,9 @@ const App: React.FC = () => {
                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                     <div className="flex items-center space-x-2 mb-4 text-slate-800">
                         <FileText size={20} className="text-indigo-600" />
-                        <h3 className="font-bold">Détails du Calcul</h3>
+                        <h3 className="font-bold text-sm uppercase tracking-wider">Détails de la cascade</h3>
                     </div>
-                    <ul className="space-y-2 text-[11px] font-mono text-slate-600 bg-slate-50 p-4 rounded-xl overflow-y-auto max-h-64 border border-slate-100">
+                    <ul className="space-y-2 text-[10px] font-mono text-slate-500 bg-slate-50 p-4 rounded-xl overflow-y-auto max-h-64 border border-slate-100">
                         {results.details.map((line, idx) => (
                             <li key={idx} className="border-b border-slate-200/50 pb-1 last:border-0">{line}</li>
                         ))}
