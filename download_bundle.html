@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Génération du ZIP...</title>
+    <style>body{font-family:sans-serif;padding:2rem;text-align:center;background:#f0f9ff;color:#0f172a}h1{color:#0284c7}.loader{border:4px solid #f3f3f3;border-top:4px solid #3498db;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:20px auto}@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}</style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+</head>
+<body>
+    <div id="status">
+        <h1>Création de votre archive ZIP...</h1>
+        <div class="loader"></div>
+        <p>Le téléchargement devrait démarrer automatiquement.</p>
+    </div>
+
+    <script>
+        const updatedTaxEngine = `import { TaxInputs, SimulationResult, TaxBracketData, PasResult } from '../types';
+
+// Constantes
+export const DEFAULT_VALUES: TaxInputs = {
+    situation: 'Couple',
+    children: 1, 
+    salary1: 400000,
+    realExpenses1: 45000,
+    treatAsRNI1: false,
+    per1: 0,
+    perCeiling1: 35500, 
+    salary2: 400000,
+    realExpenses2: 45000,
+    treatAsRNI2: false,
+    per2: 0,
+    perCeiling2: 35500, 
+    commonCharges: 0,
+    reduction: 0
+};
+
+// Barème OFFICIEL 2025 (Revenus 2024) - Source PDF Page 5 & 3
+const TAX_BRACKETS = [
+    { limit: 11497, rate: 0.00, label: '0%', color: '#60a5fa' },
+    { limit: 29315, rate: 0.11, label: '11%', color: '#34d399' },
+    { limit: 83823, rate: 0.30, label: '30%', color: '#facc15' },
+    { limit: 180294, rate: 0.41, label: '41%', color: '#f97316' },
+    { limit: 999999999, rate: 0.45, label: '45%', color: '#dc2626' }
+];
+
+// Seuils et Plafonds OFFICIELS 2025 - Source PDF Page 2, 3, 11, 13
+const THRESHOLDS = {
+    // Page 11 : "Déduction 10% (maximum 14 426 €)", "b est au minimum de 504€"
+    DEDUCTION_10_PERCENT_MAX: 14426,
+    DEDUCTION_10_PERCENT_MIN: 504,
+    
+    // Page 2 : "PLAFONNEMENT DES EFFETS DU QUOTIENT FAMILIAL ... plafonné à 1 791 €"
+    PFQF_CEILING: 1791, 
+    
+    // Page 3 & 13 : "VEUFS ... réduction d’impôt complémentaire d’un montant maximal de 1 993 €"
+    RCV_AMOUNT: 1993, 
+    
+    // Page 3 & 13 : DÉCOTE
+    // Célibataire : "égale à la différence entre 889 € et les 45,25%...", seuil 1964 €
+    DECOTE_SINGLE_MAX: 889,
+    DECOTE_SINGLE_THRESHOLD: 1964,
+    
+    // Couple : "égale à la différence entre 1 470 € et les 45,25%...", seuil 3 249 €
+    DECOTE_COUPLE_MAX: 1470,
+    DECOTE_COUPLE_THRESHOLD: 3249,
+    
+    DECOTE_RATE: 0.4525,
+    RECOUVREMENT_THRESHOLD: 61,
+};
+
+const CEHR_BRACKETS = [
+    { situation: 'Célibataire', lower: 0, upper: 250000, rate: 0.00 },
+    { situation: 'Célibataire', lower: 250000, upper: 500000, rate: 0.03 },
+    { situation: 'Célibataire', lower: 500000, upper: Infinity, rate: 0.04 },
+    { situation: 'Couple', lower: 0, upper: 500000, rate: 0.00 },
+    { situation: 'Couple', lower: 500000, upper: 1000000, rate: 0.03 },
+    { situation: 'Couple', lower: 1000000, upper: Infinity, rate: 0.04 }
+];
+
+// --- Helpers ---
+
+function calculateDeduction(salary: number, realExpenses: number, treatAsRNI: boolean): number {
+    if (treatAsRNI) return 0;
+    if (salary === 0) return 0;
+    const deduction10Pct = Math.min(salary * 0.10, THRESHOLDS.DEDUCTION_10_PERCENT_MAX);
+    const finalDeduction10Pct = Math.max(deduction10Pct, THRESHOLDS.DEDUCTION_10_PERCENT_MIN);
+    return Math.max(finalDeduction10Pct, realExpenses);
+}
+
+/**
+ * Calcul des parts fiscales selon la situation.
+ */
+function getParts(situation: string, children: number): number {
+    const numChildren = Math.floor(children);
+    let parts = 0;
+
+    if (situation === 'Couple') {
+        parts = 2; // Base couple
+    } else if (situation === 'Veuf') {
+        // Veuf avec enfants à charge : situation de famille du marié (2 parts de base)
+        // Veuf sans enfants à charge : 1 part (Situation générale)
+        parts = numChildren > 0 ? 2 : 1;
+    } else {
+        parts = 1; // Base célibataire
+    }
+
+    // Parts enfants
+    if (numChildren >= 1) parts += 0.5; // 1er
+    if (numChildren >= 2) parts += 0.5; // 2ème
+    if (numChildren >= 3) parts += (numChildren - 2) * 1; // 3ème et suivants
+
+    return parts;
+}
+
+// Calcul simple de l'impôt brut selon le quotient familial
+function calculateTaxBrut(rni: number, parts: number) {
+    const qf = rni / parts;
+    let taxBrutQF = 0;
+    let prevLimit = 0;
+    const details: string[] = [];
+    const bracketData: TaxBracketData[] = [];
+    let rniInBrackets = 0;
+    let highestRate = 0;
+
+    for (const bracket of TAX_BRACKETS) {
+        const taxableAmount = Math.min(qf, bracket.limit) - prevLimit;
+        if (taxableAmount > 0) {
+            const taxInBracket = taxableAmount * bracket.rate;
+            taxBrutQF += taxInBracket;
+            details.push(\`Tranche \${bracket.label} : \${taxableAmount.toFixed(0)}€ * \${bracket.rate * 100}% = \${taxInBracket.toFixed(0)}€\`);
+            bracketData.push({
+                label: bracket.label,
+                rate: bracket.rate,
+                amount: taxableAmount,
+                color: bracket.color
+            });
+            rniInBrackets += taxableAmount;
+            if (bracket.rate > highestRate) highestRate = bracket.rate;
+        }
+        prevLimit = bracket.limit;
+        if (qf <= bracket.limit) break;
+    }
+
+    if (rniInBrackets <= 0) {
+        bracketData.push({ label: '0%', rate: 0, amount: 0, color: '#60a5fa' });
+    }
+
+    const totalTaxBrut = taxBrutQF * parts;
+    // On tronque à l'euro inférieur
+    return { tax: Math.floor(Math.max(0, totalTaxBrut)), details, qf, bracketData, highestRate };
+}
+
+// Helper complet pour calculer l'impôt AVEC le plafonnement du QF standard
+function calculateTaxWithCapping(rni: number, parts: number, situation: string) {
+    const real = calculateTaxBrut(rni, parts);
+    
+    // Définition de la situation de base pour le plafonnement (Référence)
+    // Pour Couple -> Base 2.
+    // Pour Célibataire -> Base 1.
+    // Pour Veuf -> La référence est Célibataire (1 part) pour calculer le plafonnement standard.
+    const baseParts = situation === 'Couple' ? 2 : 1; 
+
+    // Si pas de parts supplémentaires par rapport à la base, pas de plafonnement
+    if (parts <= baseParts) {
+        return { 
+            tax: real.tax, isCapped: false, capAmount: 0, details: real.details,
+            qf: real.qf, highestRate: real.highestRate, bracketData: real.bracketData,
+            baseTax: real.tax // Pour info
+        };
+    }
+
+    // Calcul impôt sur les parts de base (Reference)
+    const base = calculateTaxBrut(rni, baseParts);
+    
+    // Calcul de l'avantage maximum autorisé (Plafond STANDARD)
+    // Pour Veuf, comme pour Célib/Divorcé, chaque demi-part excédentaire est plafonnée à 1791€.
+    const nbDemiParts = (parts - baseParts) * 2;
+    const maxAdvantage = nbDemiParts * THRESHOLDS.PFQF_CEILING;
+
+    // L'impôt ne peut pas être inférieur à (Impôt_Base - Avantage_Max)
+    const taxFloor = Math.max(0, base.tax - maxAdvantage);
+    
+    // Détection du plafonnement
+    if (real.tax < taxFloor) {
+        const cappedDetails = [...base.details];
+        cappedDetails.push(\`Plafonnement QF: Avantage fiscal limité à \${maxAdvantage}€\`);
+
+        return {
+            tax: taxFloor, // I1 (Droits Simples)
+            isCapped: true,
+            capAmount: maxAdvantage,
+            details: cappedDetails,
+            qf: base.qf, // On affiche le QF correspondant au calcul plafonné (souvent Base QF)
+            highestRate: base.highestRate,
+            bracketData: base.bracketData,
+            baseTax: base.tax
+        };
+    }
+
+    return { 
+        tax: real.tax, isCapped: false, capAmount: 0, details: real.details,
+        qf: real.qf, highestRate: real.highestRate, bracketData: real.bracketData,
+        baseTax: base.tax
+    };
+}
+
+
+function applyDecote(tax: number, situation: string) {
+    // Pour la décote, Veuf est considéré comme "Célibataire" (Imposition séparée),
+    // contrairement au calcul des parts où il peut être assimilé à un couple (si enfants).
+    const isCoupleThreshold = situation === 'Couple'; 
+    
+    const maxDecote = isCoupleThreshold ? THRESHOLDS.DECOTE_COUPLE_MAX : THRESHOLDS.DECOTE_SINGLE_MAX;
+    const threshold = isCoupleThreshold ? THRESHOLDS.DECOTE_COUPLE_THRESHOLD : THRESHOLDS.DECOTE_SINGLE_THRESHOLD;
+    
+    if (tax <= 0) return { tax: 0, decote: 0 };
+    if (tax > threshold) return { tax: tax, decote: 0 };
+
+    const decoteTheorique = maxDecote - (THRESHOLDS.DECOTE_RATE * tax);
+    const appliedDecote = Math.max(0, Math.min(decoteTheorique, tax));
+    return { tax: tax - appliedDecote, decote: appliedDecote };
+}
+
+function calculateCEHR(rfr: number, situation: string): number {
+    let cehr = 0;
+    let situationToUse = situation === 'Veuf' ? 'Célibataire' : situation;
+    const brackets = CEHR_BRACKETS.filter(b => b.situation === situationToUse).sort((a, b) => a.lower - b.lower);
+
+    for (const bracket of brackets) {
+        if (bracket.rate > 0 && rfr > bracket.lower) {
+            const taxableInBand = Math.min(rfr, bracket.upper) - bracket.lower;
+            cehr += taxableInBand * bracket.rate;
+        }
+    }
+    return Math.round(cehr);
+}
+
+// --- Logique principale ---
+
+export function runSimulation(inputs: TaxInputs): SimulationResult {
+    const { situation, children, salary1, realExpenses1, treatAsRNI1, per1, perCeiling1, commonCharges, reduction } = inputs;
+    let { salary2, realExpenses2, treatAsRNI2, per2, perCeiling2 } = inputs;
+
+    // FORCAGE A ZERO POUR VEUF et CELIBATAIRE
+    if (situation !== 'Couple') {
+        salary2 = 0; realExpenses2 = 0; treatAsRNI2 = false; per2 = 0; perCeiling2 = 0;
+    }
+
+    // 1. Calcul du RNI
+    const perDeducted1 = Math.min(per1, perCeiling1);
+    const perDeducted2 = Math.min(per2, perCeiling2);
+    const deduction1 = calculateDeduction(salary1, realExpenses1, treatAsRNI1);
+    const deduction2 = calculateDeduction(salary2, realExpenses2, treatAsRNI2);
+
+    const rni1 = Math.max(0, salary1 - deduction1 - perDeducted1);
+    const rni2 = Math.max(0, salary2 - deduction2 - perDeducted2);
+
+    const globalGrossIncome = (salary1 + salary2) - (deduction1 + deduction2);
+    // Note: Pour le calcul global, on déduit les charges communes du RNI Global.
+    const rni = Math.max(0, globalGrossIncome - perDeducted1 - perDeducted2 - commonCharges);
+    const rfr = globalGrossIncome; 
+
+    // --- BRANCHE STANDARD ---
+    // Calcul des parts
+    const partsDisplay = getParts(situation, children);
+    
+    // Calcul de l'impôt avec plafonnement standard (I1)
+    const res = calculateTaxWithCapping(rni, partsDisplay, situation);
+    
+    const I1 = res.tax; // Droits Simples (après plafonnement standard)
+    const baseTax = res.baseTax; // Impôt A (sur 1 part ou 2 parts base)
+    
+    let H = 0; // Réduction Complémentaire Veuf
+    let taxAfterRCV = I1;
+    let details = res.details;
+
+    // Calcul Réduction Complémentaire Veuf (Si plafonné)
+    if (situation === 'Veuf' && res.isCapped) {
+        const resUncapped = calculateTaxBrut(rni, partsDisplay);
+        const realTax = resUncapped.tax;
+        const excessAdvantage = I1 - realTax; 
+        
+        H = Math.min(excessAdvantage, THRESHOLDS.RCV_AMOUNT);
+        H = Math.floor(H);
+        
+        if (H > 0) {
+            taxAfterRCV = I1 - H;
+            details.push(\`Réduction Complémentaire Veuf : -\${H}€ (Plafond RCV atteint)\`);
+        }
+    }
+
+    const finalTaxBeforeDecote = Math.max(0, taxAfterRCV); // I2
+
+    // --- FINALISATION COMMUNE ---
+    
+    // 1. Décote (Sur I2)
+    const taxBaseForDecote = Math.round(finalTaxBeforeDecote);
+    // Veuf : situation='Veuf' -> applyDecote utilise seuil célibataire (Correct)
+    const decoteResult = applyDecote(taxBaseForDecote, situation);
+    
+    // Base pour le PAS : Impôt AVANT réductions d'impôt (car le PAS est un acompte sur l'impôt brut)
+    // On conserve le montant après décote mais avant réductions.
+    const taxBeforeReductions = Math.round(decoteResult.tax); 
+
+    // 2. Réductions utilisateur
+    let finalTax = Math.max(0, taxBeforeReductions - reduction);
+    finalTax = Math.round(finalTax);
+
+    // 3. Seuil de recouvrement
+    if (finalTax > 0 && finalTax < THRESHOLDS.RECOUVREMENT_THRESHOLD) {
+        finalTax = 0;
+    }
+
+    // 4. CEHR
+    const cehr = calculateCEHR(rfr, situation);
+    const totalTax = finalTax + cehr;
+
+    // Données pour UI
+    const advantage = res.isCapped ? res.capAmount : 0;
+    
+    // --- PAS Calculation (Individualisation BOFiP) ---
+    const pas = { tauxFoyer: 0, tauxD1: 0, tauxD2: 0 }; 
+    const totalNet = salary1 + salary2; 
+    
+    // Taux Foyer : Impôt AVANT RICI / Net Imposable Total
+    // Le PAS est assis sur le revenu net imposable
+    if (totalNet > 0) pas.tauxFoyer = (taxBeforeReductions / totalNet) * 100;
+    
+    // --- Individualisation : Méthode BOFiP (Imputation par soustraction) ---
+    // BOFiP : Le taux du conjoint aux revenus les plus faibles est calculé sur ses seuls revenus
+    // MAIS en utilisant le quotient familial global du foyer.
+    // L'autre conjoint supporte le reste de l'impôt.
+    
+    if (situation === 'Couple' && totalNet > 0 && (salary1 > 0 || salary2 > 0)) {
+        
+        // 1. Identifier Conjoint Faible (Min) et Fort (Max)
+        const s1 = salary1;
+        const s2 = salary2;
+        let minIs1 = s1 < s2;
+        if (s1 === s2) minIs1 = true; // Arbitraire si égalité
+
+        const salaryMin = minIs1 ? s1 : s2;
+        const salaryMax = minIs1 ? s2 : s1;
+        
+        // Revenu Net Imposable individuel (On ne déduit pas les charges communes pour maximiser la protection du min)
+        const rniMin = minIs1 ? rni1 : rni2;
+
+        // 2. Calculer l'impôt théorique sur le revenu FAIBLE seul
+        //    CRUCIAL : On utilise 'partsDisplay' (parts GLOBALES du foyer, ex: 3 pour couple + 2 enfants)
+        const resMin = calculateTaxWithCapping(rniMin, partsDisplay, 'Couple');
+        
+        // Appliquer la décote COUPLE sur cet impôt théorique
+        const decoteMin = applyDecote(resMin.tax, 'Couple');
+        const taxMinTheorique = Math.round(decoteMin.tax);
+
+        // 3. Calculer les taux
+        // Taux Min = Impôt Théorique Min / Salaire Min
+        const rateMin = salaryMin > 0 ? (taxMinTheorique / salaryMin) * 100 : 0;
+        
+        // Impôt Max = Impôt Total Foyer (Avant Réduc) - Impôt Théorique Min
+        // Le conjoint fort paie le "surplus" d'impôt généré par ses revenus
+        const taxMaxTheorique = Math.max(0, taxBeforeReductions - taxMinTheorique);
+        const rateMax = salaryMax > 0 ? (taxMaxTheorique / salaryMax) * 100 : 0;
+
+        if (minIs1) {
+            pas.tauxD1 = rateMin;
+            pas.tauxD2 = rateMax;
+        } else {
+            pas.tauxD1 = rateMax;
+            pas.tauxD2 = rateMin;
+        }
+    } else {
+        // Célibataire / Veuf / Mono-revenu : Taux indiv = Taux foyer
+        pas.tauxD1 = pas.tauxFoyer;
+        pas.tauxD2 = 0;
+    }
+
+    // --- PER Simulation ---
+    let perInvest = 0, perSaving = 0, perMessage = "";
+    const effectiveTmi = res.highestRate;
+    const lowerBracketIndex = TAX_BRACKETS.findIndex(b => b.rate === effectiveTmi) - 1;
+    if (effectiveTmi > 0 && lowerBracketIndex >= 0) {
+        const lowerBracket = TAX_BRACKETS[lowerBracketIndex];
+        const partsForMarginal = res.isCapped ? (situation === 'Couple' || situation === 'Veuf' ? 2 : 1) : partsDisplay;
+        const currentQfForTmi = rni / partsForMarginal;
+        const rniToInvest = (currentQfForTmi - lowerBracket.limit) * partsForMarginal;
+        perInvest = Math.max(0, Math.round(rniToInvest));
+        perSaving = Math.max(0, Math.round(rniToInvest * effectiveTmi));
+        perMessage = \`TMI Effectif: \${(effectiveTmi * 100).toFixed(0)}%. Épargne pour saut de tranche.\`;
+    }
+
+    return {
+        rbg: globalGrossIncome, rni, rfr, parts: partsDisplay, qf: res.qf, 
+        finalTax, cehr, totalTax, tmi: effectiveTmi, pas, details, 
+        bracketData: res.bracketData,
+        pfqf: { 
+            isCapped: res.isCapped, 
+            advantage: advantage, // Affiche le plafond standard
+            cap: res.capAmount, 
+            taxBase: I1, // Droits Simples (avant réduction Veuf)
+            rcvReduction: H, // La réduction spécifique
+            taxBeforeRCV: I1 
+        },
+        decote: { 
+            amount: decoteResult.decote, 
+            taxBeforeDecote: I1 
+        },
+        perWarning: { isPer1Capped: per1 > perCeiling1, isPer2Capped: false },
+        perSimulation: { investAmount: perInvest, savingAmount: perSaving, message: perMessage }
+    };
+}`;
+
+        // Contenu de tous les fichiers
+        const files = {
+            "index.tsx": `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Impossible de trouver l'élément racine 'root'");
+}
+
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);`,
+            "metadata.json": `{
+  "name": "Simulateur Impôt 2025 veuf ok",
+  "description": "Calcul en temps réel de l'impôt sur le revenu 2025 (revenus 2024)",
+  "requestFramePermissions": []
+}`,
+            "index.html": `<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simulateur Impôt 2025</title>
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"><\/script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+      }
+    </style>
+    <link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-slate-50 text-slate-900 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"><\/script>
+  </body>
+</html>`,
+            "index.css": `@tailwind base;
+@tailwind components;
+@tailwind utilities;`,
+            "App.tsx": `import React, { useState, useEffect } from 'react';
+import { Header } from './components/Header';
+import { Footer } from './components/Footer';
+import { TaxForm } from './components/TaxForm';
+import { TaxResults } from './components/TaxResults';
+import { TaxChart } from './components/TaxChart';
+import { DEFAULT_VALUES, runSimulation } from './utils/taxEngine';
+import { TaxInputs, SimulationResult } from './types';
+import { FileText } from 'lucide-react';
+
+const App: React.FC = () => {
+  const [inputs, setInputs] = useState<TaxInputs>(DEFAULT_VALUES);
+  const [results, setResults] = useState<SimulationResult | null>(null);
+
+  // Exécuter la simulation à chaque changement d'input
+  useEffect(() => {
+    const res = runSimulation(inputs);
+    setResults(res);
+  }, [inputs]);
+
+  const handleInputChange = (field: keyof TaxInputs, value: any) => {
+    setInputs(prev => {
+      const newInputs = { ...prev, [field]: value };
+      
+      // Si on change la situation et que ce n'est pas "Couple", on remet à 0 les champs du conjoint
+      if (field === 'situation' && value !== 'Couple') {
+        newInputs.salary2 = 0;
+        newInputs.realExpenses2 = 0;
+        newInputs.per2 = 0;
+        newInputs.perCeiling2 = 0;
+      }
+      
+      return newInputs;
+    });
+  };
+
+  const handleReset = () => {
+    // On réinitialise avec une copie fraîche des valeurs par défaut
+    setInputs({ ...DEFAULT_VALUES });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col bg-slate-50 font-sans text-slate-900">
+      <Header title="Simulateur Impôt 2025" className="bg-white shadow-sm" />
+
+      <main className="flex-grow container mx-auto px-4 py-8">
+        <div className="max-w-6xl mx-auto">
+          
+          <div className="mb-8 text-center sm:text-left">
+            <h1 className="text-3xl font-extrabold text-slate-900 mb-2">Votre Simulation Fiscale</h1>
+            <p className="text-slate-500">
+                Calcul en temps réel basé sur les barèmes 2025 (revenus 2024), incluant le quotient familial, la décote et la CEHR.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+            
+            {/* Colonne Gauche : Formulaire (5 cols) */}
+            <div className="xl:col-span-5 space-y-6">
+               <TaxForm 
+                 inputs={inputs} 
+                 onChange={handleInputChange} 
+                 onReset={handleReset} 
+               />
+               
+               {/* Details techniques pour mobile/desktop si besoin */}
+               {results && (
+                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="flex items-center space-x-2 mb-4 text-slate-800">
+                        <FileText size={20} />
+                        <h3 className="font-bold">Détails du Calcul</h3>
+                    </div>
+                    <ul className="space-y-2 text-xs font-mono text-slate-600 bg-slate-50 p-4 rounded-lg overflow-y-auto max-h-64">
+                        {results.details.map((line, idx) => (
+                            <li key={idx} className="border-b border-slate-200 pb-1 last:border-0">{line}</li>
+                        ))}
+                    </ul>
+                 </div>
+               )}
+            </div>
+
+            {/* Colonne Droite : Résultats & Graphs (7 cols) */}
+            <div className="xl:col-span-7 space-y-6">
+                {results && (
+                    <>
+                        <TaxResults results={results} inputs={inputs} />
+                        <TaxChart 
+                            bracketData={results.bracketData} 
+                            qf={results.qf} 
+                            parts={results.parts}
+                            perSimulation={results.perSimulation}
+                        />
+                    </>
+                )}
+            </div>
+
+          </div>
+        </div>
+      </main>
+
+      <Footer />
+    </div>
+  );
+};
+
+export default App;`,
+            "types.ts": `import React from 'react';
+
+// Types génériques UI
+export interface ComponentProps {
+  className?: string;
+  children?: React.ReactNode;
+}
+
+// Types métier Fiscalité
+
+export interface TaxInputs {
+  situation: 'Couple' | 'Célibataire' | 'Veuf';
+  children: number;
+  salary1: number;
+  realExpenses1: number;
+  treatAsRNI1: boolean;
+  per1: number;
+  perCeiling1: number;
+  salary2: number;
+  realExpenses2: number;
+  treatAsRNI2: boolean;
+  per2: number;
+  perCeiling2: number;
+  commonCharges: number;
+  reduction: number;
+}
+
+export interface TaxBracketData {
+  label: string;
+  rate: number;
+  amount: number;
+  color: string;
+}
+
+export interface PasResult {
+  tauxFoyer: number;
+  tauxD1: number;
+  tauxD2: number;
+}
+
+export interface CeilingDetail {
+  label: string;
+  amount: number;
+}
+
+export interface SimulationResult {
+  rbg: number;
+  rni: number;
+  rfr: number;
+  parts: number;
+  qf: number;
+  finalTax: number;
+  cehr: number;
+  totalTax: number;
+  tmi: number;
+  pas: PasResult;
+  details: string[];
+  bracketData: TaxBracketData[];
+  pfqf: {
+    isCapped: boolean;
+    advantage: number;
+    cap: number;
+    taxBase: number;
+    rcvReduction: number;
+    taxBeforeRCV: number;
+  };
+  decote: {
+    amount: number;
+    taxBeforeDecote: number;
+  };
+  perWarning: {
+    isPer1Capped: boolean;
+    isPer2Capped: boolean;
+  };
+  perSimulation: {
+    investAmount: number;
+    savingAmount: number;
+    message: string;
+  };
+}`,
+            "components/Header.tsx": `import React from 'react';
+import { ComponentProps } from '../types';
+import { Layout } from 'lucide-react';
+
+interface HeaderProps extends ComponentProps {
+  title: string;
+}
+
+export const Header: React.FC<HeaderProps> = ({ title, className = '' }) => {
+  return (
+    <header className={\`bg-white border-b border-slate-200 sticky top-0 z-50 \${className}\`}>
+      <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className="p-2 bg-indigo-600 rounded-lg text-white">
+            <Layout size={20} />
+          </div>
+          <h1 className="text-lg font-bold text-slate-800 tracking-tight">{title}</h1>
+        </div>
+        
+        <nav className="hidden md:flex items-center space-x-6">
+          <span className="text-sm font-medium text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors">Documentation</span>
+          <span className="text-sm font-medium text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors">Composants</span>
+        </nav>
+      </div>
+    </header>
+  );
+};`,
+            "components/Footer.tsx": `import React from 'react';
+
+export const Footer: React.FC = () => {
+  return (
+    <footer className="bg-white border-t border-slate-200 py-8">
+      <div className="container mx-auto px-4 text-center">
+        <p className="text-sm text-slate-500">
+          Généré par votre Assistant React Senior. Prêt pour l'intégration de code.
+        </p>
+      </div>
+    </footer>
+  );
+};`,
+            "components/CodeInputArea.tsx": `import React from 'react';
+import { Code2, ArrowRight } from 'lucide-react';
+
+interface CodeInputAreaProps {
+  onAnalyze: () => void;
+}
+
+export const CodeInputArea: React.FC<CodeInputAreaProps> = ({ onAnalyze }) => {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mb-4">
+        <Code2 size={32} />
+      </div>
+      <h3 className="text-lg font-semibold text-slate-900 mb-2">En attente de votre code</h3>
+      <p className="text-slate-500 max-w-md mb-8">
+        J'ai préparé l'architecture du projet. Une fois que vous m'aurez fourni le HTML, je le découperai en composants React modulaires ici.
+      </p>
+      
+      {/* Simulation d'un bouton d'action */}
+      <button 
+        onClick={onAnalyze}
+        className="group flex items-center space-x-2 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all shadow-md hover:shadow-lg"
+      >
+        <span>Simuler l'intégration</span>
+        <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
+      </button>
+    </div>
+  );
+};`,
+            "components/PlaceholderContent.tsx": `import React from 'react';
+
+export const PlaceholderContent: React.FC = () => {
+  return (
+    <div className="space-y-4 animate-in fade-in duration-500">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold text-slate-700">Aperçu de la Structure Cible</h3>
+        <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-bold rounded-full">PRÊT</span>
+      </div>
+      
+      <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+        <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex space-x-2">
+          <div className="w-3 h-3 rounded-full bg-red-400"></div>
+          <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+          <div className="w-3 h-3 rounded-full bg-green-400"></div>
+        </div>
+        <div className="p-4 space-y-3 font-mono text-sm">
+          <div className="flex items-center text-slate-600">
+            <span className="text-blue-500 mr-2">src/</span>
+          </div>
+          <div className="pl-4 flex flex-col space-y-2 border-l-2 border-slate-100 ml-1">
+             <div className="flex items-center text-slate-600">
+                <span className="text-yellow-500 mr-2">components/</span>
+             </div>
+             <div className="pl-6 text-slate-400 space-y-1">
+                <p>HeroSection.tsx</p>
+                <p>FeatureGrid.tsx</p>
+                <p>ContactForm.tsx</p>
+                <p>Navigation.tsx</p>
+             </div>
+             <div className="flex items-center text-slate-600 mt-2">
+                <span className="text-cyan-500 mr-2">App.tsx</span>
+             </div>
+          </div>
+        </div>
+      </div>
+      
+      <p className="text-center text-sm text-slate-500 mt-4 italic">
+        "Veuillez coller le code source maintenant..."
+      </p>
+    </div>
+  );
+};`,
+            "utils/taxEngine.ts": updatedTaxEngine,
+            "components/TaxForm.tsx": `import React from 'react';
+import { TaxInputs } from '../types';
+import { Users, Euro, Calculator, AlertCircle, RotateCcw } from 'lucide-react';
+
+interface TaxFormProps {
+  inputs: TaxInputs;
+  onChange: (field: keyof TaxInputs, value: any) => void;
+  onReset: () => void;
+}
+
+export const TaxForm: React.FC<TaxFormProps> = ({ inputs, onChange, onReset }) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    const val = type === 'number' ? (parseFloat(value) || 0) : value;
+    onChange(name as keyof TaxInputs, val);
+  };
+
+  const isCouple = inputs.situation === 'Couple';
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 sm:p-8 space-y-8">
+      
+      {/* 1. Situation */}
+      <section>
+        <div className="flex items-center space-x-2 mb-4">
+          <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600">
+            <Users size={20} />
+          </div>
+          <h2 className="text-xl font-bold text-slate-800">Situation de Famille</h2>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-1">
+            <label htmlFor="situation" className="block text-sm font-semibold text-slate-700">Statut</label>
+            <select 
+              id="situation" 
+              name="situation"
+              value={inputs.situation}
+              onChange={handleChange}
+              className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+            >
+              <option value="Couple">Couple (Marié / PACSé)</option>
+              <option value="Célibataire">Célibataire / Divorcé</option>
+              <option value="Veuf">Veuf ou Veuve</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="children" className="block text-sm font-semibold text-slate-700">Enfants à charge</label>
+            <input 
+              type="number" 
+              id="children" 
+              name="children"
+              min="0"
+              value={inputs.children}
+              onChange={handleChange}
+              className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* 2. Revenus */}
+      <section>
+        <div className="flex items-center space-x-2 mb-4">
+          <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+            <Euro size={20} />
+          </div>
+          <h2 className="text-xl font-bold text-slate-800">Revenus et Charges</h2>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Déclarant 1 */}
+          <div className="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
+            <h3 className="text-lg font-semibold text-blue-800 mb-4">Déclarant 1 (D1)</h3>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label htmlFor="salary1" className="block text-sm text-slate-700">Salaire Net Imposable (1AJ)</label>
+                <input type="number" name="salary1" id="salary1" value={inputs.salary1} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="realExpenses1" className="block text-sm text-slate-700">Frais Réels (1AK)</label>
+                <input type="number" name="realExpenses1" id="realExpenses1" value={inputs.realExpenses1} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                <p className="text-xs text-slate-500">Si &gt; 10% du salaire. Remplace l'abattement forfaitaire.</p>
+              </div>
+              <div className="space-y-4">
+                <div className="space-y-1">
+                   <label htmlFor="per1" className="block text-sm text-slate-700">Versement PER</label>
+                   <input type="number" name="per1" id="per1" value={inputs.per1} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                </div>
+                <div className="space-y-1">
+                   <label htmlFor="perCeiling1" className="block text-sm text-slate-700">Plafond PER</label>
+                   <input type="number" name="perCeiling1" id="perCeiling1" value={inputs.perCeiling1} onChange={handleChange} className="w-full p-3 border border-yellow-300 bg-yellow-50 rounded-lg focus:ring-yellow-500" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Déclarant 2 */}
+          <div className={\`bg-blue-50/50 p-5 rounded-xl border border-blue-100 transition-opacity duration-200 \${!isCouple ? 'opacity-50 pointer-events-none grayscale' : ''}\`}>
+            <h3 className="text-lg font-semibold text-blue-800 mb-4">Déclarant 2 (D2)</h3>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label htmlFor="salary2" className="block text-sm text-slate-700">Salaire Net Imposable (1BJ)</label>
+                <input type="number" name="salary2" id="salary2" value={inputs.salary2} onChange={handleChange} disabled={!isCouple} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="realExpenses2" className="block text-sm text-slate-700">Frais Réels (1BK)</label>
+                <input type="number" name="realExpenses2" id="realExpenses2" value={inputs.realExpenses2} onChange={handleChange} disabled={!isCouple} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                <p className="text-xs text-slate-500">Si &gt; 10% du salaire. Remplace l'abattement forfaitaire.</p>
+              </div>
+              <div className="space-y-4">
+                <div className="space-y-1">
+                   <label htmlFor="per2" className="block text-sm text-slate-700">Versement PER</label>
+                   <input type="number" name="per2" id="per2" value={inputs.per2} onChange={handleChange} disabled={!isCouple} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" />
+                </div>
+                <div className="space-y-1">
+                   <label htmlFor="perCeiling2" className="block text-sm text-slate-700">Plafond PER</label>
+                   <input type="number" name="perCeiling2" id="perCeiling2" value={inputs.perCeiling2} onChange={handleChange} disabled={!isCouple} className="w-full p-3 border border-yellow-300 bg-yellow-50 rounded-lg focus:ring-yellow-500" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Charges Communes & Reductions */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+            <div className="space-y-1">
+                <label htmlFor="commonCharges" className="block text-sm font-semibold text-slate-700">Charges déductibles communes (CSG...)</label>
+                <input type="number" name="commonCharges" id="commonCharges" value={inputs.commonCharges} onChange={handleChange} className="w-full p-3 border border-slate-300 rounded-lg focus:ring-indigo-500" />
+            </div>
+            <div className="space-y-1">
+                <label htmlFor="reduction" className="block text-sm font-semibold text-emerald-700">Réductions / Crédits d'Impôt</label>
+                <input type="number" name="reduction" id="reduction" value={inputs.reduction} onChange={handleChange} className="w-full p-3 border border-emerald-300 rounded-lg focus:ring-emerald-500 bg-emerald-50/30" />
+                <p className="text-xs text-slate-500">Montant soustrait directement de l'impôt brut.</p>
+            </div>
+        </div>
+      </section>
+
+      {/* Footer Actions */}
+      <div className="pt-4 border-t border-slate-100">
+        <button 
+          onClick={onReset}
+          className="w-full sm:w-auto flex items-center justify-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-3 px-6 rounded-lg transition duration-150 ease-in-out"
+        >
+          <RotateCcw size={18} />
+          <span>Réinitialiser la simulation</span>
+        </button>
+      </div>
+    </div>
+  );
+};`,
+            "components/TaxResults.tsx": `import React from 'react';
+import { SimulationResult, TaxInputs } from '../types';
+import { AlertTriangle, Info, Calculator, CheckCircle2 } from 'lucide-react';
+
+interface TaxResultsProps {
+  results: SimulationResult;
+  inputs: TaxInputs;
+}
+
+const formatCurrency = (val: number) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val);
+const formatPercent = (val: number) => new Intl.NumberFormat('fr-FR', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(val);
+
+export const TaxResults: React.FC<TaxResultsProps> = ({ results, inputs }) => {
+  return (
+    <div className="space-y-8">
+      
+      {/* KPI Cards */}
+      <section>
+         <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-slate-800">Résultats Clés</h2>
+         </div>
+         
+         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+             <ResultCard label="Revenu Net Imposable" value={formatCurrency(results.rni)} />
+             <ResultCard label="Nombre de Parts" value={results.parts.toString().replace('.', ',')} />
+             <ResultCard label="Quotient Familial (Base)" value={formatCurrency(results.qf)} />
+             <ResultCard label="TMI (Taux Marginal)" value={formatPercent(results.tmi)} color="text-red-600" />
+             <ResultCard label="Droits Simples" value={formatCurrency(results.pfqf.taxBase)} />
+             <ResultCard label="Impôt Net (Hors CEHR)" value={formatCurrency(results.finalTax)} highlight />
+             <ResultCard label="Total à Payer" value={formatCurrency(results.totalTax)} color="text-indigo-900" highlight />
+         </div>
+      </section>
+
+      {/* Détail du Calcul (Breakdown) */}
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center space-x-2">
+            <Calculator size={20} className="text-slate-500" />
+            <h3 className="font-bold text-slate-800">Détail du calcul de l'impôt</h3>
+        </div>
+        <div className="p-6 space-y-4 text-sm">
+            
+            {/* Droits Simples */}
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <div className="flex flex-col">
+                    <span className="text-slate-700 font-medium text-base">Droits Simples</span>
+                    {inputs.situation === 'Veuf' && (
+                        <span className="text-xs text-slate-500">Impôt Brut calculé sur base Célibataire</span>
+                    )}
+                </div>
+                <span className="font-semibold text-lg">{formatCurrency(results.pfqf.taxBase)}</span>
+            </div>
+
+            {/* Réduction Complémentaire (Veuf) Spécifique */}
+            {inputs.situation === 'Veuf' && (
+                <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-100">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="font-bold text-emerald-800 flex items-center text-base">
+                            <CheckCircle2 size={18} className="mr-2" />
+                            Réduction Complémentaire Veuf
+                        </span>
+                        <span className="font-bold text-emerald-700 text-lg">- {formatCurrency(results.pfqf.rcvReduction)}</span>
+                    </div>
+                    
+                    <div className="text-xs text-emerald-700 mt-2 space-y-1">
+                         <div className="flex justify-between border-b border-emerald-200/50 pb-1">
+                            <span>Impôt Brut (Base Célibataire) :</span>
+                            <span className="font-medium">{formatCurrency(results.pfqf.taxBase)}</span>
+                         </div>
+                         <div className="flex justify-between border-b border-emerald-200/50 pb-1">
+                            <span>Montant référence (Base Couple) :</span>
+                            <span className="font-medium">{formatCurrency(results.pfqf.taxBase - (results.pfqf.isCapped ? results.pfqf.cap : results.pfqf.rcvReduction))}</span>
+                         </div>
+                         <div className="flex justify-between pt-1">
+                             <span>Différence :</span>
+                             <span className="font-bold">{formatCurrency(results.pfqf.isCapped ? results.pfqf.cap + 1000 : results.pfqf.rcvReduction)} (Plafonnée à 1 993 €)</span>
+                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Autres mécanismes (Décote, etc.) */}
+            <div className="space-y-2 pt-2">
+                {/* Décote */}
+                {results.decote.amount > 0 && (
+                    <div className="flex justify-between items-center text-slate-600 px-3">
+                        <span className="flex items-center"><span className="mr-2">↳</span> Décote</span>
+                        <span>- {formatCurrency(results.decote.amount)}</span>
+                    </div>
+                )}
+
+                {/* Réductions saisies */}
+                {inputs.reduction > 0 && (
+                    <div className="flex justify-between items-center text-slate-600 px-3">
+                        <span className="flex items-center"><span className="mr-2">↳</span> Réductions / Crédits d'impôt saisies</span>
+                        <span>- {formatCurrency(inputs.reduction)}</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Sous-total Impôt Revenu */}
+            <div className="flex justify-between items-center pt-3 border-t border-slate-100 mt-2 bg-slate-50/50 p-3 rounded-lg">
+                <span className="font-semibold text-slate-800">Impôt sur le Revenu Net</span>
+                <span className="font-bold text-slate-900 text-lg">{formatCurrency(results.finalTax)}</span>
+            </div>
+
+            {/* CEHR */}
+            {results.cehr > 0 && (
+                <div className="flex justify-between items-center text-red-600 bg-red-50 p-3 rounded-lg border border-red-100 mt-2">
+                     <span className="font-bold flex items-center">
+                        <span className="mr-2">+</span> Contribution Hauts Revenus
+                     </span>
+                     <span className="font-bold text-base">+ {formatCurrency(results.cehr)}</span>
+                </div>
+            )}
+            
+            {/* Total Final */}
+            <div className="flex justify-between items-center pt-4 mt-2">
+                <span className="text-xl font-bold text-slate-900">MONTANT TOTAL À PAYER</span>
+                <span className="text-2xl font-black text-indigo-700">{formatCurrency(results.totalTax)}</span>
+            </div>
+        </div>
+      </section>
+
+      {/* Prélèvement à la Source */}
+      <section className="bg-blue-50/50 border border-blue-200 rounded-xl p-6">
+        <h3 className="text-xl font-bold text-blue-800 mb-4">Prélèvement à la Source (PAS)</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <PasCard label="Taux Déclarant 1" value={formatPercent(results.pas.tauxD1/100)} />
+            <PasCard label="Taux Déclarant 2" value={formatPercent(results.pas.tauxD2/100)} />
+            <PasCard label="Taux Foyer" value={formatPercent(results.pas.tauxFoyer/100)} isMain />
+        </div>
+        <p className="text-xs text-blue-600 mt-2 italic flex items-center">
+            <Info size={14} className="mr-1"/>
+            Estimation basée sur l'individualisation des taux (méthode BOFiP).
+        </p>
+      </section>
+
+      {/* Warnings */}
+      <div className="space-y-3">
+        {results.pfqf.isCapped && inputs.situation !== 'Veuf' && (
+            <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg flex items-start space-x-3">
+                <AlertTriangle className="text-amber-600 flex-shrink-0 mt-1" size={20} />
+                <div>
+                    <p className="font-bold text-amber-800">Plafonnement du Quotient Familial Appliqué</p>
+                    <p className="text-sm text-amber-700 mt-1">
+                        L'avantage fiscal est plafonné à <strong>{formatCurrency(results.pfqf.cap)}</strong>. 
+                        Sans ce plafond, l'avantage serait de {formatCurrency(results.pfqf.advantage)}.
+                    </p>
+                </div>
+            </div>
+        )}
+        {(results.perWarning.isPer1Capped || results.perWarning.isPer2Capped) && (
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg flex items-start space-x-3">
+                 <AlertTriangle className="text-red-600 flex-shrink-0 mt-1" size={20} />
+                 <div>
+                    <p className="font-bold text-red-800">Plafond PER Dépassé</p>
+                    <p className="text-sm text-red-700 mt-1">Certains versements PER dépassent le plafond déductible saisi. L'excédent n'est pas déduit.</p>
+                 </div>
+            </div>
+        )}
+      </div>
+
+    </div>
+  );
+};
+
+const ResultCard: React.FC<{ label: string; value: string; highlight?: boolean; color?: string }> = ({ label, value, highlight, color = 'text-slate-900' }) => (
+    <div className={\`p-4 rounded-lg border flex flex-col justify-between h-full \${highlight ? 'bg-white border-slate-300 shadow-sm' : 'bg-slate-50 border-slate-200'}\`}>
+        <p className="text-xs text-slate-500 font-medium uppercase mb-1 leading-tight" title={label}>{label}</p>
+        <p className={\`text-xl font-bold \${color}\`}>{value}</p>
+    </div>
+);
+
+const PasCard: React.FC<{ label: string; value: string; isMain?: boolean }> = ({ label, value, isMain }) => (
+    <div className={\`p-4 rounded-lg text-center \${isMain ? 'bg-white border border-blue-300 shadow-sm' : 'bg-blue-100/50'}\`}>
+        <p className="text-xs text-slate-500 mb-1">{label}</p>
+        <p className="text-2xl font-bold text-blue-900">{value}</p>
+    </div>
+);`,
+            "components/TaxChart.tsx": `import React, { useEffect, useRef } from 'react';
+import { TaxBracketData } from '../types';
+import Chart from 'chart.js/auto';
+
+interface TaxChartProps {
+  bracketData: TaxBracketData[];
+  qf: number;
+  parts: number;
+  perSimulation: {
+    investAmount: number;
+    savingAmount: number;
+    message: string;
+  };
+}
+
+export const TaxChart: React.FC<TaxChartProps> = ({ bracketData, qf, parts, perSimulation }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartInstanceRef = useRef<Chart | null>(null);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    // Destroy previous instance
+    if (chartInstanceRef.current) {
+      chartInstanceRef.current.destroy();
+    }
+
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    // Préparation des données
+    const dataSets: any[] = [];
+    let currentTaxableIncome = 0;
+    
+    // Sort logic handled in engine, but safe to ensure
+    const sortedData = [...bracketData].sort((a, b) => a.rate - b.rate);
+
+    sortedData.forEach(item => {
+        const limit = item.amount * parts;
+        if (limit > 0) {
+            dataSets.push({
+                label: \`Tranche \${item.label}\`,
+                data: [limit],
+                backgroundColor: item.color,
+                stack: 'stack1',
+                borderWidth: 1,
+                borderColor: '#ffffff',
+            });
+            currentTaxableIncome += limit;
+        }
+    });
+
+    const totalRNI = qf * parts;
+    const remainingRNI = Math.max(0, totalRNI - currentTaxableIncome);
+    
+    // Tranche vide ou restante
+    if (remainingRNI > 0 || currentTaxableIncome === 0) {
+        dataSets.unshift({ // Put at start to be at the bottom/left of stack depending on axis
+            label: 'Non Imposable (0%)',
+            data: [remainingRNI > 0 ? remainingRNI : (totalRNI > 0 ? totalRNI : 1000)],
+            backgroundColor: '#e5e7eb',
+            stack: 'stack1',
+            borderWidth: 1,
+            borderColor: '#ffffff',
+        });
+    }
+
+    // Création du graph
+    chartInstanceRef.current = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Revenu Net Imposable'],
+            datasets: dataSets
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: {
+                duration: 500
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(context: any) {
+                            let label = context.dataset.label || '';
+                            if (label) label += ': ';
+                            label += new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(context.parsed.x);
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    stacked: true,
+                    max: totalRNI > 0 ? totalRNI * 1.1 : 10000,
+                    grid: { display: false }
+                },
+                y: {
+                    stacked: true,
+                    grid: { display: false }
+                }
+            }
+        }
+    });
+
+    return () => {
+        if (chartInstanceRef.current) {
+            chartInstanceRef.current.destroy();
+        }
+    };
+  }, [bracketData, qf, parts]);
+
+  return (
+    <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+      <h3 className="text-lg font-bold text-slate-800 mb-4">Répartition par Tranche</h3>
+      
+      <div className="relative h-48 w-full mb-6">
+        <canvas ref={canvasRef} />
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 text-sm text-slate-600 mb-6 justify-center">
+        {bracketData.map((b, i) => (
+            <div key={i} className="flex items-center space-x-1">
+                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: b.color }}></span>
+                <span>{b.label}</span>
+            </div>
+        ))}
+      </div>
+
+      {/* PER Simulator */}
+      {perSimulation.investAmount > 0 && (
+        <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
+             <h4 className="font-semibold text-slate-800 mb-2">💡 Optimisation PER</h4>
+             <p className="text-sm text-slate-600 mb-3" dangerouslySetInnerHTML={{ __html: perSimulation.message }} />
+             
+             <div className="grid grid-cols-2 gap-4">
+                 <div>
+                     <span className="text-xs text-slate-500 uppercase font-bold">À Investir</span>
+                     <div className="p-2 bg-white border border-slate-300 rounded font-mono text-slate-800">
+                        {perSimulation.investAmount.toLocaleString('fr-FR')} €
+                     </div>
+                 </div>
+                 <div>
+                     <span className="text-xs text-slate-500 uppercase font-bold text-green-700">Gain Impôt</span>
+                     <div className="p-2 bg-green-50 border border-green-200 rounded font-mono text-green-800 font-bold">
+                        {perSimulation.savingAmount.toLocaleString('fr-FR')} €
+                     </div>
+                 </div>
+             </div>
+        </div>
+      )}
+    </div>
+  );
+};`,
+            "package.json": `{
+  "name": "simulateur-impot-2025",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.344.0",
+    "chart.js": "^4.4.1",
+    "jspdf": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.2.0"
+  }
+}`,
+            "vite.config.ts": `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react()],
+});`,
+            "tsconfig.json": `{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "references": [{ "path": "./tsconfig.node.json" }]
+}`,
+            "tsconfig.node.json": `{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}`,
+            ".github/workflows/deploy.yml": `name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4`,
+            "utils/pdfGenerator.ts": `import { jsPDF } from "jspdf";
+import { SimulationResult, TaxInputs } from "../types";
+
+const formatCur = (val: number) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(val || 0);
+
+const getStandardDeduction = (salary: number) => {
+    if (salary === 0) return 0;
+    const d = salary * 0.10;
+    // Bornes 2025 (revenus 2024) approx
+    const min = 504;
+    const max = 14426;
+    let val = Math.max(d, min);
+    val = Math.min(val, max);
+    // On plafonne au salaire pour l'affichage pour éviter confusion si salaire < min
+    return Math.min(val, salary);
+}
+
+export const generateTaxPDF = (results: SimulationResult, inputs: TaxInputs) => {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const margin = 20;
+  let y = 20;
+
+  // Configuration de la police
+  doc.setFont("helvetica");
+
+  // --- En-tête ---
+  doc.setFontSize(22);
+  doc.setTextColor(30, 41, 59); // Slate 800
+  doc.text("Simulation Impôt 2025", margin, y);
+  
+  y += 10;
+  doc.setFontSize(10);
+  doc.setTextColor(100, 116, 139); // Slate 500
+  doc.text(\`Généré le \${new Date().toLocaleDateString('fr-FR')} à \${new Date().toLocaleTimeString('fr-FR')}\`, margin, y);
+  doc.text("Revenus 2024 - Barème 2025", margin, y + 5);
+
+  y += 20;
+
+  // --- Résultat Principal ---
+  doc.setFillColor(240, 253, 244); // Green 50
+  doc.setDrawColor(34, 197, 94); // Green 500
+  doc.roundedRect(margin, y, pageWidth - (margin * 2), 35, 3, 3, 'FD');
+
+  doc.setFontSize(14);
+  doc.setTextColor(21, 128, 61); // Green 700
+  doc.text("NET À PAYER", margin + 10, y + 12);
+
+  doc.setFontSize(22);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(20, 83, 45); // Green 900
+  doc.text(formatCur(results.totalTax), margin + 10, y + 25);
+  
+  doc.setFont("helvetica", "normal");
+  y += 45;
+
+  // --- Section : Données d'entrée (Situation & Revenus) ---
+  const isCouple = inputs.situation === 'Couple';
+  const boxHeight = isCouple ? 100 : 75;
+  
+  // Fond gris clair pour la zone contextuelle
+  doc.setFillColor(248, 250, 252); // Slate 50
+  doc.setDrawColor(226, 232, 240); // Slate 200
+  
+  // Cadre gauche: Situation
+  doc.roundedRect(margin, y, 80, boxHeight, 2, 2, 'FD');
+  
+  doc.setFontSize(12);
+  doc.setTextColor(30, 41, 59);
+  doc.setFont("helvetica", "bold");
+  doc.text("Situation de Famille", margin + 5, y + 10);
+  
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(71, 85, 105);
+  doc.text(\`• Statut : \${inputs.situation}\`, margin + 5, y + 20);
+  doc.text(\`• Enfants : \${inputs.children}\`, margin + 5, y + 27);
+  doc.text(\`• Parts fiscales : \${results.parts}\`, margin + 5, y + 34);
+
+  // Cadre droite: Revenus & Charges
+  doc.setFillColor(248, 250, 252); 
+  doc.roundedRect(margin + 85, y, 85, boxHeight, 2, 2, 'FD');
+  
+  doc.setFontSize(12);
+  doc.setTextColor(30, 41, 59);
+  doc.setFont("helvetica", "bold");
+  doc.text("Revenus et Charges", margin + 90, y + 10);
+
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(71, 85, 105);
+  
+  let lineH = y + 20;
+  const colX = margin + 90;
+
+  // Déclarant 1
+  doc.setFont("helvetica", "bold");
+  doc.text(\`Déclarant 1 : \${formatCur(inputs.salary1)}\`, colX, lineH);
+  doc.setFont("helvetica", "normal");
+  lineH += 5;
+
+  doc.setFontSize(8);
+  // Frais Réels
+  doc.text(\`- Frais Réels : \${formatCur(inputs.realExpenses1)}\`, colX, lineH);
+  lineH += 4;
+  
+  if (inputs.realExpenses1 === 0 && inputs.salary1 > 0) {
+      const deduc1 = getStandardDeduction(inputs.salary1);
+      doc.setTextColor(100, 116, 139);
+      doc.text(\`  (Déduction 10% : \${formatCur(deduc1)})\`, colX, lineH);
+      doc.setTextColor(71, 85, 105);
+      lineH += 4;
+  }
+
+  doc.text(\`- Versement PER : \${formatCur(inputs.per1)}\`, colX, lineH);
+  lineH += 4;
+
+  doc.setFontSize(9);
+  lineH += 2;
+  
+  // Déclarant 2
+  if (isCouple) {
+      doc.setFont("helvetica", "bold");
+      doc.text(\`Déclarant 2 : \${formatCur(inputs.salary2)}\`, colX, lineH);
+      doc.setFont("helvetica", "normal");
+      lineH += 5;
+
+      doc.setFontSize(8);
+      
+      doc.text(\`- Frais Réels : \${formatCur(inputs.realExpenses2)}\`, colX, lineH);
+      lineH += 4;
+
+      if (inputs.realExpenses2 === 0 && inputs.salary2 > 0) {
+        const deduc2 = getStandardDeduction(inputs.salary2);
+        doc.setTextColor(100, 116, 139);
+        doc.text(\`  (Déduction 10% : \${formatCur(deduc2)})\`, colX, lineH);
+        doc.setTextColor(71, 85, 105);
+        lineH += 4;
+      }
+
+      doc.text(\`- Versement PER : \${formatCur(inputs.per2)}\`, colX, lineH);
+      lineH += 4;
+
+      doc.setFontSize(9);
+      lineH += 2;
+  }
+  
+  if (inputs.commonCharges > 0) {
+      doc.text(\`Charges déduc. : \${formatCur(inputs.commonCharges)}\`, colX, lineH);
+      lineH += 5;
+  }
+  if (inputs.reduction > 0) {
+      doc.setTextColor(22, 163, 74);
+      doc.text(\`Réductions impôt : \${formatCur(inputs.reduction)}\`, colX, lineH);
+      doc.setTextColor(71, 85, 105);
+  }
+
+  y += (boxHeight + 10);
+
+  // --- Tableau Détail du Calcul (Cascade) ---
+  doc.setFontSize(14);
+  doc.setTextColor(30, 41, 59);
+  doc.setFont("helvetica", "bold");
+  doc.text("Décomposition du calcul", margin, y);
+  y += 10;
+
+  // Fonction helper pour une ligne du tableau
+  const drawRow = (label: string, value: string, type: 'normal' | 'minus' | 'plus' | 'total' | 'subtotal' = 'normal') => {
+    const rowHeight = type === 'total' ? 12 : 8;
+    
+    // Background style
+    if (type === 'total') {
+        doc.setFillColor(255, 251, 235); // Yellow 50
+        doc.rect(margin, y - 5, pageWidth - (margin * 2), rowHeight, 'F');
+    } else if (type === 'minus') {
+        doc.setFillColor(236, 253, 245); // Emerald 50
+        doc.rect(margin, y - 5, pageWidth - (margin * 2), rowHeight, 'F');
+    } else if (type === 'plus') {
+        doc.setFillColor(254, 242, 242); // Red 50
+        doc.rect(margin, y - 5, pageWidth - (margin * 2), rowHeight, 'F');
+    }
+
+    // Text style
+    doc.setFont("helvetica", type === 'total' || type === 'subtotal' ? "bold" : "normal");
+    
+    if (type === 'minus') doc.setTextColor(21, 128, 61); // Green 700
+    else if (type === 'plus') doc.setTextColor(185, 28, 28); // Red 700
+    else if (type === 'total') doc.setTextColor(30, 41, 59);
+    else doc.setTextColor(71, 85, 105);
+
+    doc.setFontSize(type === 'total' ? 12 : 10);
+    doc.text(label, margin + 5, y);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text(value, pageWidth - margin - 5, y, { align: 'right' });
+
+    y += rowHeight;
+  };
+
+  // 1. RNI & QF (Info contextuelle)
+  drawRow("Revenu Net Imposable", formatCur(results.rni));
+  drawRow("Quotient Familial", formatCur(results.qf));
+  y += 2; // Spacer
+  
+  // 2. Droits Simples
+  doc.setDrawColor(226, 232, 240);
+  doc.line(margin, y - 2, pageWidth - margin, y - 2);
+  drawRow("Droits Simples", formatCur(results.decote.taxBeforeDecote));
+
+  // 3. Réduction Complémentaire (Veuf)
+  if (results.pfqf.rcvReduction > 0) {
+      drawRow("↳ Réduction impôt complémentaire (Quotient Conjugal)", \`- \${formatCur(results.pfqf.rcvReduction)}\`, 'minus');
+  }
+
+  // 4. Décote
+  if (results.decote.amount > 0) {
+      drawRow("↳ Décote", \`- \${formatCur(results.decote.amount)}\`, 'minus');
+  }
+
+  // 5. Réductions saisies
+  if (inputs.reduction > 0) {
+      drawRow("↳ Réductions / Crédits d'impôt saisies", \`- \${formatCur(inputs.reduction)}\`, 'minus');
+  }
+
+  // 6. Impôt Net
+  drawRow("= Impôt sur le Revenu Net", formatCur(results.finalTax), 'subtotal');
+
+  // 7. CEHR
+  if (results.cehr > 0) {
+      drawRow("+ Contribution Hauts Revenus (CEHR)", \`+ \${formatCur(results.cehr)}\`, 'plus');
+  }
+
+  // 8. Total
+  doc.setDrawColor(30, 41, 59);
+  doc.line(margin, y - 2, pageWidth - margin, y - 2);
+  drawRow("TOTAL À PAYER", formatCur(results.totalTax), 'total');
+
+  y += 15;
+
+  // --- Explications techniques ---
+  doc.setFontSize(14);
+  doc.setTextColor(30, 41, 59); 
+  doc.setFont("helvetica", "bold");
+  doc.text("Explications techniques", margin, y);
+  y += 10;
+
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(51, 65, 85);
+
+  results.details.forEach((line) => {
+    if (y > 270) {
+        doc.addPage();
+        y = 20;
+    }
+    doc.text(\`• \${line}\`, margin, y);
+    y += 7;
+  });
+
+  // Disclaimer bas de page
+  const pageCount = doc.getNumberOfPages();
+  for(let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(150);
+      doc.text("Document généré à titre indicatif - Ne remplace pas l'avis d'imposition officiel.", pageWidth / 2, 290, { align: 'center' });
+  }
+
+  doc.save("simulation-impot-2025.pdf");
+}`
+        };
+
+        const zip = new JSZip();
+
+        // Ajout des fichiers au ZIP
+        for (const [path, content] of Object.entries(files)) {
+            zip.file(path, content);
+        }
+
+        // Génération et sauvegarde
+        zip.generateAsync({type:"blob"}).then(function(content) {
+            saveAs(content, "simulateur-impot-2025.zip");
+            document.querySelector('.loader').style.display = 'none';
+            document.querySelector('h1').textContent = 'Téléchargement terminé !';
+            document.querySelector('p').textContent = 'Vérifiez votre dossier de téléchargements.';
+        });
+    </script>
+</body>
+</html>
