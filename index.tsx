@@ -10,6 +10,4 @@ if (container) {
       <App />
     </React.StrictMode>
   );
-} else {
-  console.error("Erreur : l'élément #root est introuvable.");
 }
