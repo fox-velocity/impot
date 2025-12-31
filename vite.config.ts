@@ -1,10 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: './', // Crucial pour GitHub Pages : génère des chemins relatifs
+  base: './', // Très important pour que les liens JS/CSS fonctionnent
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
