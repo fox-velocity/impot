@@ -4,13 +4,11 @@ import { Footer } from './components/Footer';
 import { TaxForm } from './components/TaxForm';
 import { TaxResults } from './components/TaxResults';
 import { TaxChart } from './components/TaxChart';
-import { Landing } from './components/Landing';
 import { DEFAULT_VALUES, runSimulation } from './utils/taxEngine';
 import { TaxInputs, SimulationResult } from './types';
-import { FileText, ChevronLeft } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [view, setView] = useState<'landing' | 'simulator'>('landing');
   const [inputs, setInputs] = useState<TaxInputs>(DEFAULT_VALUES);
   const [results, setResults] = useState<SimulationResult | null>(null);
 
@@ -37,11 +35,6 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Gestion de la navigation SPA (Single Page Application)
-  if (view === 'landing') {
-    return <Landing onStart={() => setView('simulator')} />;
-  }
-
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 font-sans text-slate-900 animate-in">
       <Header title="Fox Velocity" className="bg-white shadow-sm" />
@@ -51,21 +44,17 @@ const App: React.FC = () => {
           
           <div className="mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="text-center sm:text-left">
-              <button 
-                onClick={() => setView('landing')}
-                className="inline-flex items-center text-indigo-600 hover:text-indigo-800 text-sm font-semibold mb-2 transition-colors group"
-              >
-                <ChevronLeft size={16} className="mr-1 group-hover:-translate-x-1 transition-transform" />
-                Retour au portail
-              </button>
-              <h1 className="text-4xl font-black text-slate-900 tracking-tight">Simulateur Impôt <span className="text-indigo-600">2025</span></h1>
+              <h1 className="text-4xl font-black text-slate-900 tracking-tight">
+                Simulateur Impôt <span className="text-indigo-600">2025</span>
+              </h1>
               <p className="text-slate-500 font-medium italic">
-                  Expertise Fox Velocity • Revenus 2024
+                  Expertise Fox Velocity • Revenus 2024 • Barème Officiel
               </p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+            {/* Colonne de saisie */}
             <div className="xl:col-span-5 space-y-6">
                <TaxForm 
                  inputs={inputs} 
@@ -88,6 +77,7 @@ const App: React.FC = () => {
                )}
             </div>
 
+            {/* Colonne des résultats */}
             <div className="xl:col-span-7 space-y-6">
                 {results && (
                     <>
