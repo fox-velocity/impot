@@ -74,7 +74,7 @@ function calculateTaxBrut(rni: number, parts: number) {
         if (taxableAmount > 0) {
             taxBrutQF += taxableAmount * bracket.rate;
             bracketData.push({ label: bracket.label, rate: bracket.rate, amount: taxableAmount, color: bracket.color });
-            if (bracket.rate > highestRate) highestRate = bracket.rate;
+            if (bracket.rate > 0) highestRate = bracket.rate;
         }
         prevLimit = bracket.limit;
         if (qf <= bracket.limit) break;
@@ -92,7 +92,7 @@ export function runSimulation(inputs: TaxInputs): SimulationResult {
     const perD2 = situation === 'Couple' ? Math.min(per2, perCeiling2) : 0;
 
     const rni = Math.max(0, (salary1 - deduc1 - perD1) + (salary2 - deduc2 - perD2) - commonCharges);
-    const rfr = (salary1 + salary2) * 0.9; // Estimation simplifiée du RFR
+    const rfr = (salary1 + salary2) * 0.9;
 
     // 2. Parts et Impôt Brut
     const parts = getParts(situation, children);
@@ -129,7 +129,26 @@ export function runSimulation(inputs: TaxInputs): SimulationResult {
 
     const taxAfterDecote = Math.max(0, finalTaxBrut - appliedDecote);
 
-    // 5. Finalisation
+    // 5. Optimisation PER
+    let perInvest = 0;
+    let perSaving = 0;
+    let perMessage = "";
+    const tmi = taxReal.highestRate;
+
+    if (tmi >= 0.11) {
+        // On calcule combien de revenu est "bloqué" dans la tranche la plus haute
+        const currentQF = rni / parts;
+        const currentBracket = TAX_BRACKETS.find(b => currentQF <= b.limit) || TAX_BRACKETS[TAX_BRACKETS.length - 1];
+        const lowerBracket = TAX_BRACKETS[TAX_BRACKETS.indexOf(currentBracket) - 1];
+        
+        // Montant à investir pour descendre d'une tranche
+        const amountToDropBracket = (currentQF - lowerBracket.limit) * parts;
+        perInvest = Math.round(amountToDropBracket);
+        perSaving = Math.round(perInvest * tmi);
+        perMessage = `En investissant <strong>${perInvest.toLocaleString()} €</strong> dans un PER, vous basculez dans la tranche à <strong>${(lowerBracket.rate * 100).toFixed(0)}%</strong>.`;
+    }
+
+    // 6. Finalisation
     let totalTax = Math.max(0, Math.round(taxAfterDecote - reduction));
     if (totalTax < THRESHOLDS.RECOUVREMENT_THRESHOLD) totalTax = 0;
 
@@ -142,18 +161,18 @@ export function runSimulation(inputs: TaxInputs): SimulationResult {
         finalTax: totalTax,
         cehr: 0,
         totalTax,
-        tmi: taxReal.highestRate,
-        pas: { tauxFoyer: (totalTax / rni) * 100, tauxD1: 0, tauxD2: 0 },
+        tmi,
+        pas: { tauxFoyer: rni > 0 ? (totalTax / rni) * 100 : 0, tauxD1: 0, tauxD2: 0 },
         details: [
             `Revenu Net Imposable : ${Math.round(rni).toLocaleString()} €`,
-            `Impôt Brut (Droits simples) : ${Math.round(finalTaxBrut).toLocaleString()} €`,
-            appliedDecote > 0 ? `Décote appliquée : -${Math.round(appliedDecote).toLocaleString()} €` : "Pas de décote",
+            `Impôt Brut : ${Math.round(finalTaxBrut).toLocaleString()} €`,
+            appliedDecote > 0 ? `Décote : -${Math.round(appliedDecote).toLocaleString()} €` : "",
             reduction > 0 ? `Réductions : -${reduction.toLocaleString()} €` : ""
         ].filter(l => l !== ""),
         bracketData: taxReal.bracketData,
         pfqf: { isCapped, advantage: capAmount, cap: THRESHOLDS.PFQF_CEILING, taxBase: finalTaxBrut, rcvReduction: 0, taxBeforeRCV: finalTaxBrut },
         decote: { amount: appliedDecote, taxBeforeDecote: finalTaxBrut },
-        perWarning: { isPer1Capped: per1 > perCeiling1, isPer2Capped: false },
-        perSimulation: { investAmount: 0, savingAmount: 0, message: "" }
+        perWarning: { isPer1Capped: per1 > perCeiling1, isPer2Capped: per2 > perCeiling2 },
+        perSimulation: { investAmount: perInvest, savingAmount: perSaving, message: perMessage }
     };
 }
