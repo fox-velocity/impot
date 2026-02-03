@@ -4,5 +4,5 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/impot/', // Indispensable pour https://fox-velocity.github.io/impot/
+  base: '/impot/', // Indispensable pour GitHub Pages sur ce dépôt
 });

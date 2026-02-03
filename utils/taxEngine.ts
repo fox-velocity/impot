@@ -25,17 +25,9 @@ const TAX_BRACKETS = [
     { limit: 999999999, rate: 0.45, label: '45%', color: '#dc2626' }
 ];
 
-const THRESHOLDS = {
-    DEDUCTION_10_PERCENT_MAX: 14426,
-    DEDUCTION_10_PERCENT_MIN: 504,
-    PFQF_CEILING: 1791, 
-    DECOTE_RATE: 0.4525,
-    RECOUVREMENT_THRESHOLD: 61,
-};
-
 function calculateDeduction(salary: number, realExpenses: number): number {
     if (salary === 0) return 0;
-    const d = Math.min(salary * 0.10, THRESHOLDS.DEDUCTION_10_PERCENT_MAX);
+    const d = Math.min(salary * 0.10, 14426);
     return Math.max(d, realExpenses);
 }
 
@@ -79,15 +71,14 @@ export function runSimulation(inputs: TaxInputs): SimulationResult {
     const res = calculateTaxBrut(rni, parts);
     const finalTax = Math.round(Math.max(0, res.tax - inputs.reduction));
 
-    // Optimisation PER : calcul du versement pour saturer la tranche TMI actuelle
-    let perInvest = 0, perSaving = 0, perMsg = "Votre foyer n'est pas imposable (Tranche 0%).";
+    // Optimisation PER
+    let perInvest = 0, perSaving = 0, perMsg = "Votre foyer n'est pas imposable.";
     if (res.highestRate > 0) {
         const idx = TAX_BRACKETS.findIndex(b => b.rate === res.highestRate);
         const lowerLimit = TAX_BRACKETS[idx - 1].limit;
-        // Montant nécessaire pour faire descendre le QF au plafond de la tranche précédente
         perInvest = Math.max(0, Math.round((res.qf - lowerLimit) * parts));
         perSaving = Math.round(perInvest * res.highestRate);
-        perMsg = `Votre Taux Marginal d'Imposition (TMI) est de ${(res.highestRate * 100).toFixed(0)}%. Réduisez votre fiscalité en versant sur votre PER.`;
+        perMsg = `Votre TMI est de ${(res.highestRate * 100).toFixed(0)}%. Chaque euro versé sur un PER réduit votre base imposable et vous rapporte ${(res.highestRate * 100).toFixed(0)}% d'économie d'impôt.`;
     }
 
     return {
