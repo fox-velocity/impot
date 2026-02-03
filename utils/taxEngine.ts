@@ -79,20 +79,21 @@ export function runSimulation(inputs: TaxInputs): SimulationResult {
     const res = calculateTaxBrut(rni, parts);
     const finalTax = Math.round(Math.max(0, res.tax - inputs.reduction));
 
-    // Optimisation PER
-    let perInvest = 0, perSaving = 0, perMsg = "Vous n'êtes pas imposable.";
+    // Optimisation PER : calcul du versement pour saturer la tranche TMI actuelle
+    let perInvest = 0, perSaving = 0, perMsg = "Votre foyer n'est pas imposable (Tranche 0%).";
     if (res.highestRate > 0) {
         const idx = TAX_BRACKETS.findIndex(b => b.rate === res.highestRate);
         const lowerLimit = TAX_BRACKETS[idx - 1].limit;
+        // Montant nécessaire pour faire descendre le QF au plafond de la tranche précédente
         perInvest = Math.max(0, Math.round((res.qf - lowerLimit) * parts));
         perSaving = Math.round(perInvest * res.highestRate);
-        perMsg = `TMI de ${(res.highestRate * 100).toFixed(0)}%. Réduisez votre impôt en versant sur votre PER.`;
+        perMsg = `Votre Taux Marginal d'Imposition (TMI) est de ${(res.highestRate * 100).toFixed(0)}%. Réduisez votre fiscalité en versant sur votre PER.`;
     }
 
     return {
         rbg: rfr, rni, rfr, parts, qf: res.qf, finalTax, cehr: 0, totalTax: finalTax, tmi: res.highestRate,
         pas: { tauxFoyer: rfr > 0 ? (finalTax / rfr) * 100 : 0, tauxD1: 0, tauxD2: 0 },
-        details: [`Calcul basé sur un RNI de ${Math.round(rni)}€`],
+        details: [`Simulation basée sur un Revenu Net Imposable de ${Math.round(rni)}€`],
         bracketData: res.bracketData,
         pfqf: { isCapped: false, advantage: 0, cap: 1791, taxBase: finalTax, rcvReduction: 0, taxBeforeRCV: finalTax },
         decote: { amount: 0, taxBeforeDecote: finalTax },
