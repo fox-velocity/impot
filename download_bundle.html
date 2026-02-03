@@ -17,20 +17,20 @@
     <script>
         const updatedTaxEngine = `import { TaxInputs, SimulationResult, TaxBracketData, PasResult } from '../types';
 
-// Constantes
+// Constantes - Valeurs par défaut mises à jour selon capture d'écran
 export const DEFAULT_VALUES: TaxInputs = {
     situation: 'Couple',
-    children: 1, 
-    salary1: 400000,
-    realExpenses1: 45000,
+    children: 2, 
+    salary1: 55000,
+    realExpenses1: 6000,
     treatAsRNI1: false,
-    per1: 0,
-    perCeiling1: 35500, 
-    salary2: 400000,
-    realExpenses2: 45000,
+    per1: 2000,
+    perCeiling1: 5500, 
+    salary2: 45000,
+    realExpenses2: 5000,
     treatAsRNI2: false,
-    per2: 0,
-    perCeiling2: 35500, 
+    per2: 2500,
+    perCeiling2: 3999, 
     commonCharges: 0,
     reduction: 0
 };

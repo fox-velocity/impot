@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Header } from './components/Header';
-import { Footer } from './components/Footer';
 import { TaxForm } from './components/TaxForm';
 import { TaxResults } from './components/TaxResults';
 import { TaxChart } from './components/TaxChart';
 import { DEFAULT_VALUES, runSimulation } from './utils/taxEngine';
 import { TaxInputs, SimulationResult } from './types';
-import { FileText, Calculator, Landmark } from 'lucide-react';
+import { FileText, Calculator } from 'lucide-react';
 
-const App: React.FC = () => {
+interface TaxSimulatorProps {
+  className?: string;
+}
+
+export const TaxSimulator: React.FC<TaxSimulatorProps> = ({ className = '' }) => {
   const [inputs, setInputs] = useState<TaxInputs>(DEFAULT_VALUES);
   const [results, setResults] = useState<SimulationResult | null>(null);
 
+  // Exécuter la simulation à chaque changement d'input
   useEffect(() => {
     const res = runSimulation(inputs);
     setResults(res);
@@ -20,86 +23,84 @@ const App: React.FC = () => {
   const handleInputChange = (field: keyof TaxInputs, value: any) => {
     setInputs(prev => {
       const newInputs = { ...prev, [field]: value };
+      
+      // Si on change la situation et que ce n'est pas "Couple", on remet à 0 les champs du conjoint
       if (field === 'situation' && value !== 'Couple') {
         newInputs.salary2 = 0;
         newInputs.realExpenses2 = 0;
+        newInputs.per2 = 0;
+        newInputs.perCeiling2 = 0;
       }
+      
       return newInputs;
     });
   };
 
   const handleReset = () => {
     setInputs({ ...DEFAULT_VALUES });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 font-sans text-slate-900 animate-in">
-      <Header title="Fox Velocity" className="bg-white shadow-sm" />
-
-      <main className="flex-grow container mx-auto px-4 py-12">
-        <div className="max-w-5xl mx-auto space-y-12">
-          
-          <div className="text-center space-y-4">
-            <div className="inline-flex p-3 bg-indigo-50 rounded-2xl text-indigo-600 mb-2">
-                <Landmark size={32} />
+    <div className={`bg-slate-50 font-sans text-slate-900 rounded-2xl shadow-sm border border-slate-200 overflow-hidden ${className}`}>
+      {/* Header Interne du Composant */}
+      <div className="bg-white border-b border-slate-200 px-6 py-6 md:px-8">
+        <div className="flex items-center space-x-3 mb-2">
+            <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                <Calculator size={24} />
             </div>
-            <h1 className="text-5xl font-black text-slate-900 tracking-tight">
-              Simulateur Impôt <span className="text-indigo-600">2025</span>
-            </h1>
-            <p className="text-slate-500 font-medium text-lg italic max-w-2xl mx-auto">
-                Calcul précis basé sur les revenus 2024, incluant le mécanisme de la décote pour les revenus modestes.
-            </p>
-          </div>
+            <h2 className="text-2xl font-extrabold text-slate-900">Simulateur Impôt 2025</h2>
+        </div>
+        <p className="text-slate-500 max-w-2xl">
+            Estimez votre impôt sur le revenu (revenus 2024) avec la gestion précise du quotient familial, de la décote, du plafonnement et de la CEHR.
+        </p>
+      </div>
 
-          <TaxForm 
-            inputs={inputs} 
-            onChange={handleInputChange} 
-            onReset={handleReset} 
-          />
+      <div className="p-4 md:p-8">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+            
+            {/* Colonne Gauche : Formulaire (5 cols) */}
+            <div className="xl:col-span-5 space-y-6">
+               <TaxForm 
+                 inputs={inputs} 
+                 onChange={handleInputChange} 
+                 onReset={handleReset} 
+               />
+               
+               {/* Details techniques */}
+               {results && (
+                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="flex items-center space-x-2 mb-4 text-slate-800">
+                        <FileText size={20} />
+                        <h3 className="font-bold">Détails du Calcul</h3>
+                    </div>
+                    <ul className="space-y-2 text-xs font-mono text-slate-600 bg-slate-50 p-4 rounded-lg overflow-y-auto max-h-64">
+                        {results.details.map((line, idx) => (
+                            <li key={idx} className="border-b border-slate-200 pb-1 last:border-0">{line}</li>
+                        ))}
+                    </ul>
+                 </div>
+               )}
+            </div>
 
-          {results && (
-            <div className="space-y-12 pt-8 border-t border-slate-200">
-                <div className="flex items-center justify-center space-x-3 text-slate-400">
-                    <div className="h-px w-16 bg-slate-300"></div>
-                    <Calculator size={20} />
-                    <span className="uppercase tracking-[0.3em] font-bold text-[10px]">Résultats de la simulation</span>
-                    <div className="h-px w-16 bg-slate-300"></div>
-                </div>
-
-                <TaxResults results={results} inputs={inputs} />
-                
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                    <div className="lg:col-span-7">
+            {/* Colonne Droite : Résultats & Graphs (7 cols) */}
+            <div className="xl:col-span-7 space-y-6">
+                {results && (
+                    <>
+                        <TaxResults results={results} inputs={inputs} />
                         <TaxChart 
                             bracketData={results.bracketData} 
                             qf={results.qf} 
                             parts={results.parts}
                             perSimulation={results.perSimulation}
                         />
-                    </div>
-                    <div className="lg:col-span-5">
-                        <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm sticky top-24">
-                            <div className="flex items-center space-x-2 mb-6 text-slate-800">
-                                <FileText size={20} className="text-indigo-600" />
-                                <h3 className="font-bold text-xs uppercase tracking-wider">Log technique de calcul</h3>
-                            </div>
-                            <ul className="space-y-3 text-[11px] font-mono text-slate-500 bg-slate-50 p-6 rounded-2xl overflow-y-auto max-h-[400px] border border-slate-100">
-                                {results.details.map((line, idx) => (
-                                    <li key={idx} className="border-b border-slate-200/50 pb-2 last:border-0">{line}</li>
-                                ))}
-                            </ul>
-                        </div>
-                    </div>
-                </div>
+                    </>
+                )}
             </div>
-          )}
         </div>
-      </main>
-
-      <Footer />
+      </div>
     </div>
   );
 };
 
-export default App;
+// Export par défaut pour compatibilité si nécessaire, mais l'export nommé est préférable
+export default TaxSimulator;

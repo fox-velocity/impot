@@ -1,6 +1,6 @@
 import React from 'react';
 import { SimulationResult, TaxInputs } from '../types';
-import { Calculator, Info, AlertCircle, TrendingDown, ArrowDownCircle } from 'lucide-react';
+import { AlertTriangle, Info, Calculator } from 'lucide-react';
 
 interface TaxResultsProps {
   results: SimulationResult;
@@ -12,86 +12,85 @@ const formatPercent = (val: number) => new Intl.NumberFormat('fr-FR', { style: '
 
 export const TaxResults: React.FC<TaxResultsProps> = ({ results, inputs }) => {
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       
-      {/* KPI Principaux */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <ResultCard label="RNI (Imposable)" value={formatCurrency(results.rni)} />
-          <ResultCard label="Nombre de Parts" value={results.parts.toString().replace('.', ',')} />
-          <ResultCard label="TMI (Tranche)" value={formatPercent(results.tmi)} color="text-red-600" />
-          <ResultCard label="Net à Payer" value={formatCurrency(results.totalTax)} highlight color="text-indigo-600" />
-      </div>
+      {/* KPI Cards */}
+      <section>
+         <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-bold text-slate-800">Résultats Clés</h2>
+         </div>
+         
+         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+             <ResultCard label="Revenu fiscal de référence" value={formatCurrency(results.rfr)} />
+             <ResultCard label="Nombre de Parts" value={results.parts.toString().replace('.', ',')} />
+             <ResultCard label="Revenu Net Imposable" value={formatCurrency(results.rni)} color="text-indigo-600" />
+             <ResultCard label="Taux marginal (TMI)" value={formatPercent(results.tmi)} color="text-red-600" />
+             <ResultCard label="Impôt avant crédits" value={formatCurrency(results.finalTax)} highlight />
+             <ResultCard label="Total à payer" value={formatCurrency(results.totalTax)} color="text-indigo-900" highlight />
+         </div>
+      </section>
 
-      {/* Détail Cascade de Calcul */}
-      <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
-        <div className="bg-slate-50 px-8 py-5 border-b border-slate-200 flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-                <Calculator size={20} className="text-slate-400" />
-                <h3 className="font-bold text-slate-800">Détail du calcul (Barème 2025)</h3>
-            </div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Revenus 2024</span>
+      {/* Détail du Calcul (Breakdown) */}
+      <section className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center space-x-2">
+            <Calculator size={20} className="text-slate-500" />
+            <h3 className="font-bold text-slate-800">Impôt sur le revenu</h3>
         </div>
-        
-        <div className="p-8 space-y-6">
-            <div className="flex justify-between items-center group">
-                <span className="text-slate-500 font-medium">Impôt Brut (Droits simples)</span>
-                <span className="font-bold text-slate-900">{formatCurrency(results.decote.taxBeforeDecote)}</span>
+        <div className="p-6 space-y-4 text-sm">
+            
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <span className="text-slate-700 font-medium text-base flex items-center">
+                    Droits simples {results.pfqf.isCapped && <span className="ml-2 text-amber-600 font-bold" title="Plafonnement appliqué">*</span>}
+                </span>
+                <span className="font-semibold text-lg">{formatCurrency(results.totalTax)}</span>
             </div>
 
-            {results.decote.amount > 0 && (
-                <div className="flex justify-between items-center text-emerald-600 bg-emerald-50/50 p-4 rounded-2xl border border-dashed border-emerald-200">
-                    <div className="flex items-center space-x-2">
-                        <ArrowDownCircle size={18} />
-                        <span className="font-bold">Décote (Revenus modestes)</span>
-                    </div>
-                    <span className="font-black">- {formatCurrency(results.decote.amount)}</span>
+            {results.pfqf.isCapped && (
+                <div className="bg-amber-50 rounded-lg p-3 text-xs text-amber-800 border border-amber-100">
+                    <p className="font-bold mb-1 flex items-center">
+                        <AlertTriangle size={14} className="mr-1" /> Plafonnement du quotient familial appliqué
+                    </p>
+                    <p>L'avantage fiscal de vos parts supplémentaires est limité à {formatCurrency(results.pfqf.cap)} (plafond de 1 791 € par demi-part).</p>
                 </div>
             )}
 
-            {inputs.reduction > 0 && (
-                <div className="flex justify-between items-center text-blue-600 p-4 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30">
-                    <span className="font-bold">Réductions & Crédits d'impôt</span>
-                    <span className="font-black">- {formatCurrency(inputs.reduction)}</span>
-                </div>
-            )}
-
-            <div className="pt-6 border-t border-slate-100 flex justify-between items-center">
-                <div>
-                    <span className="text-2xl font-black text-slate-900">Impôt Final</span>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">Après mécanismes correcteurs</p>
-                </div>
-                <span className="text-4xl font-black text-indigo-600">{formatCurrency(results.totalTax)}</span>
+            <div className="flex justify-between items-center pt-3 border-t border-slate-100 mt-2 bg-slate-50/50 p-3 rounded-lg">
+                <span className="font-semibold text-slate-800">Impôt Net</span>
+                <span className="font-bold text-slate-900 text-lg">{formatCurrency(results.finalTax)}</span>
             </div>
         </div>
-      </div>
+      </section>
 
-      {/* Informations complémentaires */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-indigo-600 text-white p-6 rounded-3xl flex items-center justify-between shadow-lg shadow-indigo-100">
-              <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest opacity-70 mb-1">Taux de Prélèvement</p>
-                  <p className="text-2xl font-black">{formatPercent(results.pas.tauxFoyer / 100)}</p>
-              </div>
-              <TrendingDown size={32} className="opacity-20" />
-          </div>
-          
-          <div className="bg-white border border-slate-200 p-6 rounded-3xl flex items-center space-x-4">
-              <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center text-indigo-600">
-                  <Info size={24} />
-              </div>
-              <div>
-                  <p className="text-xs font-bold text-slate-400 uppercase mb-1">Seuil de Recouvrement</p>
-                  <p className="text-sm font-medium text-slate-600 leading-tight">L'impôt est nul si le montant final est inférieur à 61 €.</p>
-              </div>
-          </div>
-      </div>
+      {/* Prélèvement à la Source */}
+      <section className="bg-blue-50/50 border border-blue-200 rounded-xl p-6">
+        <div className="flex items-center justify-between mb-6">
+            <h3 className="text-xl font-bold text-blue-800">Prélèvement à la source</h3>
+            <span className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded-full">INDIVIDUALISÉ</span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <PasCard label="Taux Déclarant 1" value={formatPercent(results.pas.tauxD1/100)} />
+            <PasCard label="Taux Déclarant 2" value={formatPercent(results.pas.tauxD2/100)} />
+            <PasCard label="Taux du Foyer" value={formatPercent(results.pas.tauxFoyer/100)} isMain />
+        </div>
+        <p className="text-xs text-blue-600 mt-6 italic flex items-center bg-white p-3 rounded-lg border border-blue-100">
+            <Info size={16} className="mr-2 flex-shrink-0"/>
+            Ces taux sont calculés selon la méthode BOFiP : chaque conjoint bénéficie de la moitié des parts du foyer (soit {(results.parts/2).toString().replace('.', ',')} parts chacun).
+        </p>
+      </section>
     </div>
   );
 };
 
-const ResultCard = ({ label, value, highlight, color = 'text-slate-900' }: any) => (
-    <div className={`p-6 rounded-2xl border transition-all ${highlight ? 'bg-white border-indigo-200 shadow-md ring-1 ring-indigo-50' : 'bg-white border-slate-200 shadow-sm'}`}>
-        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">{label}</p>
-        <p className={`text-2xl font-black ${color}`}>{value}</p>
+const ResultCard: React.FC<{ label: string; value: string; highlight?: boolean; color?: string }> = ({ label, value, highlight, color = 'text-slate-900' }) => (
+    <div className={`p-4 rounded-lg border flex flex-col justify-between h-full ${highlight ? 'bg-white border-slate-300 shadow-sm' : 'bg-slate-50 border-slate-200'}`}>
+        <p className="text-xs text-slate-500 font-medium uppercase mb-1 leading-tight">{label}</p>
+        <p className={`text-xl font-bold ${color}`}>{value}</p>
+    </div>
+);
+
+const PasCard: React.FC<{ label: string; value: string; isMain?: boolean }> = ({ label, value, isMain }) => (
+    <div className={`p-4 rounded-lg text-center ${isMain ? 'bg-white border border-blue-300 shadow-sm' : 'bg-blue-100/50'}`}>
+        <p className="text-xs text-slate-600 mb-1 font-semibold">{label}</p>
+        <p className="text-2xl font-bold text-blue-900">{value}</p>
     </div>
 );

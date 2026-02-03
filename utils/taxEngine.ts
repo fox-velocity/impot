@@ -1,37 +1,35 @@
-import { TaxInputs, SimulationResult, TaxBracketData } from '../types';
+import { TaxInputs, SimulationResult, TaxBracketData, PasResult } from '../types';
 
-// Constantes OFFICIELLES 2025 (Revenus 2024)
+// Constantes - Valeurs par défaut
 export const DEFAULT_VALUES: TaxInputs = {
-    situation: 'Célibataire',
-    children: 0, 
-    salary1: 24000,
-    realExpenses1: 0,
+    situation: 'Couple',
+    children: 2, 
+    salary1: 55000,
+    realExpenses1: 6000,
     treatAsRNI1: false,
-    per1: 0,
-    perCeiling1: 3500, 
-    salary2: 0,
-    realExpenses2: 0,
+    per1: 2000,
+    perCeiling1: 5900, 
+    salary2: 45000,
+    realExpenses2: 5000,
     treatAsRNI2: false,
-    per2: 0,
-    perCeiling2: 3500, 
+    per2: 2500,
+    perCeiling2: 5137, 
     commonCharges: 0,
     reduction: 0
 };
 
-// Barème OFFICIEL 2025 (Revenus 2024)
 const TAX_BRACKETS = [
-    { limit: 11497, rate: 0.00, label: '0%', color: '#94a3b8' },
-    { limit: 29315, rate: 0.11, label: '11%', color: '#60a5fa' },
-    { limit: 83823, rate: 0.30, label: '30%', color: '#818cf8' },
-    { limit: 180294, rate: 0.41, label: '41%', color: '#6366f1' },
-    { limit: 999999999, rate: 0.45, label: '45%', color: '#4338ca' }
+    { limit: 11497, rate: 0.00, label: '0%', color: '#60a5fa' },
+    { limit: 29315, rate: 0.11, label: '11%', color: '#34d399' },
+    { limit: 83823, rate: 0.30, label: '30%', color: '#facc15' },
+    { limit: 180294, rate: 0.41, label: '41%', color: '#f97316' },
+    { limit: 999999999, rate: 0.45, label: '45%', color: '#dc2626' }
 ];
 
 const THRESHOLDS = {
     DEDUCTION_10_PERCENT_MAX: 14426,
     DEDUCTION_10_PERCENT_MIN: 504,
     PFQF_CEILING: 1791, 
-    RCV_AMOUNT: 1993, 
     DECOTE_SINGLE_MAX: 889,
     DECOTE_SINGLE_THRESHOLD: 1964,
     DECOTE_COUPLE_MAX: 1470,
@@ -43,22 +41,15 @@ const THRESHOLDS = {
 function calculateDeduction(salary: number, realExpenses: number): number {
     if (salary === 0) return 0;
     const deduction10Pct = Math.min(salary * 0.10, THRESHOLDS.DEDUCTION_10_PERCENT_MAX);
-    const finalDeduction10Pct = Math.max(deduction10Pct, THRESHOLDS.DEDUCTION_10_PERCENT_MIN);
-    return Math.max(finalDeduction10Pct, realExpenses);
+    return Math.max(deduction10Pct, realExpenses);
 }
 
 function getParts(situation: string, children: number): number {
-    let parts = 0;
-    if (situation === 'Couple') {
-        parts = 2;
-    } else if (situation === 'Veuf') {
-        parts = children > 0 ? 2 : 1;
-    } else {
-        parts = 1;
-    }
-    if (children >= 1) parts += 0.5;
-    if (children >= 2) parts += 0.5;
-    if (children >= 3) parts += (children - 2) * 1;
+    const numChildren = Math.floor(children);
+    let parts = situation === 'Couple' || (situation === 'Veuf' && numChildren > 0) ? 2 : 1;
+    if (numChildren >= 1) parts += 0.5;
+    if (numChildren >= 2) parts += 0.5;
+    if (numChildren >= 3) parts += (numChildren - 2) * 1;
     return parts;
 }
 
@@ -66,113 +57,104 @@ function calculateTaxBrut(rni: number, parts: number) {
     const qf = rni / parts;
     let taxBrutQF = 0;
     let prevLimit = 0;
+    const details: string[] = [];
     const bracketData: TaxBracketData[] = [];
     let highestRate = 0;
 
     for (const bracket of TAX_BRACKETS) {
         const taxableAmount = Math.min(qf, bracket.limit) - prevLimit;
         if (taxableAmount > 0) {
-            taxBrutQF += taxableAmount * bracket.rate;
+            const taxInBracket = taxableAmount * bracket.rate;
+            taxBrutQF += taxInBracket;
+            details.push(`Tranche ${bracket.label} : ${taxableAmount.toFixed(0)}€ * ${bracket.rate * 100}% = ${taxInBracket.toFixed(0)}€`);
             bracketData.push({ label: bracket.label, rate: bracket.rate, amount: taxableAmount, color: bracket.color });
             if (bracket.rate > 0) highestRate = bracket.rate;
         }
         prevLimit = bracket.limit;
         if (qf <= bracket.limit) break;
     }
-    return { tax: Math.floor(taxBrutQF * parts), qf, bracketData, highestRate };
+
+    return { tax: taxBrutQF * parts, details, qf, bracketData, highestRate };
+}
+
+function calculateTaxWithCapping(rni: number, parts: number, situation: string) {
+    const real = calculateTaxBrut(rni, parts);
+    const baseParts = situation === 'Couple' ? 2 : 1; 
+
+    if (parts <= baseParts) return { ...real, isCapped: false, capAmount: 0, baseTax: real.tax };
+
+    const base = calculateTaxBrut(rni, baseParts);
+    const nbDemiParts = (parts - baseParts) * 2;
+    const maxAdvantage = nbDemiParts * THRESHOLDS.PFQF_CEILING;
+    const taxFloor = Math.max(0, base.tax - maxAdvantage);
+    
+    if (real.tax < taxFloor) {
+        return { 
+            tax: taxFloor, isCapped: true, capAmount: maxAdvantage, 
+            details: [...base.details, `Plafonnement QF: Avantage limité à ${maxAdvantage}€`],
+            qf: base.qf, highestRate: base.highestRate, bracketData: base.bracketData, baseTax: base.tax 
+        };
+    }
+    return { ...real, isCapped: false, capAmount: 0, baseTax: base.tax };
 }
 
 export function runSimulation(inputs: TaxInputs): SimulationResult {
-    const { situation, children, salary1, realExpenses1, salary2, realExpenses2, per1, perCeiling1, per2, perCeiling2, commonCharges, reduction } = inputs;
+    const { situation, children, salary1, realExpenses1, per1, perCeiling1, reduction } = inputs;
+    let { salary2, realExpenses2, per2, perCeiling2 } = inputs;
 
-    // 1. Calcul RNI (Revenu Net Imposable)
-    const deduc1 = calculateDeduction(salary1, realExpenses1);
-    const deduc2 = situation === 'Couple' ? calculateDeduction(salary2, realExpenses2) : 0;
-    const perD1 = Math.min(per1, perCeiling1);
-    const perD2 = situation === 'Couple' ? Math.min(per2, perCeiling2) : 0;
+    if (situation !== 'Couple') {
+        salary2 = 0; realExpenses2 = 0; per2 = 0; perCeiling2 = 0;
+    }
 
-    const rni = Math.max(0, (salary1 - deduc1 - perD1) + (salary2 - deduc2 - perD2) - commonCharges);
-    const rfr = (salary1 + salary2) * 0.9;
-
-    // 2. Parts et Impôt Brut
-    const parts = getParts(situation, children);
-    const baseParts = (situation === 'Couple' || (situation === 'Veuf' && children > 0)) ? 2 : 1;
+    const deduction1 = calculateDeduction(salary1, realExpenses1);
+    const deduction2 = calculateDeduction(salary2, realExpenses2);
+    const rfr = (salary1 - deduction1) + (salary2 - deduction2);
     
-    const taxReal = calculateTaxBrut(rni, parts);
-    const taxBase = calculateTaxBrut(rni, baseParts);
+    const perDeducted1 = Math.min(per1, perCeiling1);
+    const perDeducted2 = Math.min(per2, perCeiling2);
+    const rni = Math.max(0, rfr - perDeducted1 - perDeducted2);
 
-    // 3. Plafonnement QF
-    let finalTaxBrut = taxReal.tax;
-    let isCapped = false;
-    let capAmount = 0;
+    const parts = getParts(situation, children);
+    const res = calculateTaxWithCapping(rni, parts, situation);
+    
+    const finalTax = Math.round(Math.max(0, res.tax - reduction));
+    const totalTax = finalTax;
 
-    if (parts > baseParts) {
-        const maxAdvantage = (parts - baseParts) * 2 * THRESHOLDS.PFQF_CEILING;
-        const cappedTax = taxBase.tax - maxAdvantage;
-        if (taxReal.tax < cappedTax) {
-            finalTaxBrut = cappedTax;
-            isCapped = true;
-            capAmount = maxAdvantage;
+    const pas = { tauxFoyer: 0, tauxD1: 0, tauxD2: 0 };
+    const totalNet = salary1 + salary2;
+    if (totalNet > 0) pas.tauxFoyer = (finalTax / totalNet) * 100;
+
+    if (situation === 'Couple' && totalNet > 0) {
+        const partsIndiv = parts / 2;
+        const rni2 = Math.max(0, (salary2 - deduction2) - perDeducted2);
+        const res2 = calculateTaxWithCapping(rni2, partsIndiv, 'Célibataire');
+        pas.tauxD2 = salary2 > 0 ? (res2.tax / salary2) * 100 : 0;
+        const taxD1 = Math.max(0, finalTax - res2.tax);
+        pas.tauxD1 = salary1 > 0 ? (taxD1 / salary1) * 100 : 0;
+    } else {
+        pas.tauxD1 = pas.tauxFoyer;
+    }
+
+    // --- LOGIQUE OPTIMISATION PER (Toujours calculée) ---
+    let perInvest = 0, perSaving = 0, perMsg = "Aucune optimisation fiscale immédiate possible.";
+    if (res.highestRate > 0) {
+        const currentBracketIndex = TAX_BRACKETS.findIndex(b => b.rate === res.highestRate);
+        if (currentBracketIndex > 0) {
+            const lowerLimit = TAX_BRACKETS[currentBracketIndex - 1].limit;
+            const currentQf = rni / parts;
+            // On calcule l'effort pour atteindre le plafond de la tranche en dessous
+            perInvest = Math.max(0, Math.round((currentQf - lowerLimit) * parts));
+            perSaving = Math.round(perInvest * res.highestRate);
+            perMsg = `Votre TMI est de ${(res.highestRate * 100).toFixed(0)}%.`;
         }
     }
 
-    // 4. Décote
-    let appliedDecote = 0;
-    const isCoupleDecote = situation === 'Couple';
-    const decoteThreshold = isCoupleDecote ? THRESHOLDS.DECOTE_COUPLE_THRESHOLD : THRESHOLDS.DECOTE_SINGLE_THRESHOLD;
-    const decoteMax = isCoupleDecote ? THRESHOLDS.DECOTE_COUPLE_MAX : THRESHOLDS.DECOTE_SINGLE_MAX;
-
-    if (finalTaxBrut > 0 && finalTaxBrut < decoteThreshold) {
-        appliedDecote = Math.max(0, decoteMax - (finalTaxBrut * THRESHOLDS.DECOTE_RATE));
-        appliedDecote = Math.min(appliedDecote, finalTaxBrut);
-    }
-
-    const taxAfterDecote = Math.max(0, finalTaxBrut - appliedDecote);
-
-    // 5. Optimisation PER
-    let perInvest = 0;
-    let perSaving = 0;
-    let perMessage = "";
-    const tmi = taxReal.highestRate;
-
-    if (tmi >= 0.11) {
-        // On calcule combien de revenu est "bloqué" dans la tranche la plus haute
-        const currentQF = rni / parts;
-        const currentBracket = TAX_BRACKETS.find(b => currentQF <= b.limit) || TAX_BRACKETS[TAX_BRACKETS.length - 1];
-        const lowerBracket = TAX_BRACKETS[TAX_BRACKETS.indexOf(currentBracket) - 1];
-        
-        // Montant à investir pour descendre d'une tranche
-        const amountToDropBracket = (currentQF - lowerBracket.limit) * parts;
-        perInvest = Math.round(amountToDropBracket);
-        perSaving = Math.round(perInvest * tmi);
-        perMessage = `En investissant <strong>${perInvest.toLocaleString()} €</strong> dans un PER, vous basculez dans la tranche à <strong>${(lowerBracket.rate * 100).toFixed(0)}%</strong>.`;
-    }
-
-    // 6. Finalisation
-    let totalTax = Math.max(0, Math.round(taxAfterDecote - reduction));
-    if (totalTax < THRESHOLDS.RECOUVREMENT_THRESHOLD) totalTax = 0;
-
     return {
-        rbg: salary1 + (situation === 'Couple' ? salary2 : 0),
-        rni,
-        rfr,
-        parts,
-        qf: taxReal.qf,
-        finalTax: totalTax,
-        cehr: 0,
-        totalTax,
-        tmi,
-        pas: { tauxFoyer: rni > 0 ? (totalTax / rni) * 100 : 0, tauxD1: 0, tauxD2: 0 },
-        details: [
-            `Revenu Net Imposable : ${Math.round(rni).toLocaleString()} €`,
-            `Impôt Brut : ${Math.round(finalTaxBrut).toLocaleString()} €`,
-            appliedDecote > 0 ? `Décote : -${Math.round(appliedDecote).toLocaleString()} €` : "",
-            reduction > 0 ? `Réductions : -${reduction.toLocaleString()} €` : ""
-        ].filter(l => l !== ""),
-        bracketData: taxReal.bracketData,
-        pfqf: { isCapped, advantage: capAmount, cap: THRESHOLDS.PFQF_CEILING, taxBase: finalTaxBrut, rcvReduction: 0, taxBeforeRCV: finalTaxBrut },
-        decote: { amount: appliedDecote, taxBeforeDecote: finalTaxBrut },
+        rbg: rfr, rni, rfr, parts, qf: res.qf, finalTax, cehr: 0, totalTax, tmi: res.highestRate, 
+        pas, details: res.details, bracketData: res.bracketData,
+        pfqf: { isCapped: res.isCapped, advantage: res.capAmount, cap: res.capAmount, taxBase: finalTax, rcvReduction: 0, taxBeforeRCV: finalTax },
+        decote: { amount: 0, taxBeforeDecote: finalTax },
         perWarning: { isPer1Capped: per1 > perCeiling1, isPer2Capped: per2 > perCeiling2 },
-        perSimulation: { investAmount: perInvest, savingAmount: perSaving, message: perMessage }
+        perSimulation: { investAmount: perInvest, savingAmount: perSaving, message: perMsg }
     };
 }

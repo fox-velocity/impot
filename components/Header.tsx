@@ -19,7 +19,7 @@ export const Header: React.FC<HeaderProps> = ({ title, className = '' }) => {
         
         <nav className="hidden md:flex items-center space-x-6">
           <span className="text-sm font-medium text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors">Documentation</span>
-          <span className="text-sm font-medium text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors">Support</span>
+          <span className="text-sm font-medium text-slate-600 hover:text-indigo-600 cursor-pointer transition-colors">Composants</span>
         </nav>
       </div>
     </header>
